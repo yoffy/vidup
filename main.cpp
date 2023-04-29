@@ -624,7 +624,7 @@ static int analyzeScenes(sqlite3* db, std::FILE* inStream, int fileId)
             if ( i > 0 ) {
                 debugPrintf(" scene changed\n");
                 std::uint32_t durationMs = (i - iFirstFrame) * 1000 / kFps;
-                if ( registerScene(db, {crc, durationMs, fileId}) ) {
+                if ( db && registerScene(db, {crc, durationMs, fileId}) ) {
                     return 1;
                 }
             }
@@ -644,13 +644,13 @@ static int analyzeScenes(sqlite3* db, std::FILE* inStream, int fileId)
 
     {
         std::uint32_t durationMs = (i - iFirstFrame) * 1000 / kFps;
-        if ( registerScene(db, {crc, durationMs, fileId}) ) {
+        if ( db && registerScene(db, {crc, durationMs, fileId}) ) {
             return 1;
         }
         nScenes += 1;
     }
 
-    if ( updateFileStatus(db, fileId, FileStatus::kAnalyzed) ) {
+    if ( db && updateFileStatus(db, fileId, FileStatus::kAnalyzed) ) {
         return 1;
     }
 
@@ -780,8 +780,8 @@ static int searchFile(sqlite3* db, int fileId)
 static void usage()
 {
     std::puts("usage: vidup --init");
-    std::puts("       vidup [--force -v] file");
-    std::puts("       vidup [--force -v] --stdin filename");
+    std::puts("       vidup [--dry-run --force -v] file");
+    std::puts("       vidup [--dry-run --force -v] --stdin filename");
     std::puts("       vidup --delete filename");
     std::puts("       vidup --search filename");
 }
@@ -800,6 +800,7 @@ int main(int argc, char* argv[])
     fs::path dbPath = basedir / "database";
     std::FILE* inStream = nullptr;
     CommandMode mode = kAnalyze;
+    bool isDryRun = false;
     bool isForced = false;
 
     int iArg = 1;
@@ -814,6 +815,8 @@ int main(int argc, char* argv[])
         std::string arg = argv[iArg];
         if ( arg == "--init" ) {
             return createDatabase(dbPath);
+        } else if ( arg == "--dry-run" ) {
+            isDryRun = true;
         } else if ( arg == "--force" ) {
             isForced = true;
         } else if ( arg == "-v" ) {
@@ -824,6 +827,10 @@ int main(int argc, char* argv[])
             mode = kDelete;
         } else if ( arg == "--search" ) {
             mode = kSearch;
+        } else {
+            std::fprintf(stderr, "unknown: %s\n", arg.c_str());
+            usage();
+            return 1;
         }
 
         iArg += 1;
@@ -881,23 +888,25 @@ int main(int argc, char* argv[])
             }
 
             // どんな状態であろうとエントリが存在するなら消す
-            if ( deleteFile(db, fileEntry.id) ) {
+            if ( ! isDryRun && deleteFile(db, fileEntry.id) ) {
                 exitCode = 1;
                 goto Lfinalize;
             }
         }
 
-        if ( registerFile(db, inName) ) {
-            exitCode = 1;
-            goto Lfinalize;
-        }
-        if ( getFileEntry(db, inName, fileEntry) ) {
-            exitCode = 1;
-            goto Lfinalize;
+        if ( ! isDryRun ) {
+            if ( registerFile(db, inName) ) {
+                exitCode = 1;
+                goto Lfinalize;
+            }
+            if ( getFileEntry(db, inName, fileEntry) ) {
+                exitCode = 1;
+                goto Lfinalize;
+            }
         }
 
         std::fprintf(stderr, "analyzing \"%s\"\n", inName.c_str());
-        if ( analyzeScenes(db, inStream, fileEntry.id) ) {
+        if ( analyzeScenes(isDryRun ? nullptr : db, inStream, fileEntry.id) ) {
             exitCode = 1;
             goto Lfinalize;
         }
