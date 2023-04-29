@@ -18,7 +18,20 @@ struct Scene
 {
     std::uint32_t hash;
     std::uint32_t durationMs;
-    int fileId;    
+    int fileId;
+};
+
+enum FileStatus
+{
+    kNone = 0,
+    kAnalyzed = 1,
+};
+
+struct FileEntry
+{
+    int id;
+    fs::path name;
+    int status; //!< FileStatus
 };
 
 //! gray 16x16px
@@ -139,7 +152,8 @@ static int createDatabase(const fs::path& path)
         db,
         "CREATE TABLE IF NOT EXISTS files("
             "id INTEGER PRIMARY KEY,"
-            "path TEXT UNIQUE"
+            "path TEXT UNIQUE,"
+            "status INTEGER"
         ")",
         -1,
         &stmt,
@@ -234,15 +248,21 @@ static int createDatabase(const fs::path& path)
     return 0;
 }
 
+//! name からファイルの情報を取得する
+//!
 //! @return 成功なら 0、失敗なら sqlite3 のエラーコード
-static int getFileId(sqlite3* db, const fs::path& name, int& id)
+//!
+//! 失敗した場合、entry.id には -1 が入る。
+static int getFileEntry(sqlite3* db, const fs::path& name, FileEntry& entry)
 {
     sqlite3_stmt* stmt = nullptr;
     int status;
 
+    entry.id = -1;
+
     status = sqlite3_prepare_v2(
         db,
-        "SELECT id FROM files WHERE path = ?",
+        "SELECT id, status FROM files WHERE path = ?",
         -1,
         &stmt,
         nullptr
@@ -260,17 +280,17 @@ static int getFileId(sqlite3* db, const fs::path& name, int& id)
 
     status = sqlite3_step(stmt);
     if ( status == SQLITE_DONE ) {
-        id = -1;
         sqlite3_finalize(stmt);
         return 0;
     } else if ( status != SQLITE_ROW ) {
         std::fprintf(stderr, "SELECT id from files: %d\n", status);
-        id = -1;
         sqlite3_finalize(stmt);
         return status;
     }
 
-    id = sqlite3_column_int(stmt, 0);
+    entry.id = sqlite3_column_int(stmt, 0);
+    entry.name = name;
+    entry.status = sqlite3_column_int(stmt, 1);
 
     sqlite3_finalize(stmt);
     return 0;
@@ -423,7 +443,7 @@ static int registerFile(sqlite3* db, const fs::path& name)
 
     status = sqlite3_prepare_v2(
         db,
-        "INSERT INTO files (path) VALUES (?)",
+        "INSERT INTO files (path, status) VALUES (?, ?)",
         -1,
         &stmt,
         nullptr
@@ -439,10 +459,58 @@ static int registerFile(sqlite3* db, const fs::path& name)
         return status;
     }
 
+    status = sqlite3_bind_int(stmt, 2, FileStatus::kNone);
+    if ( status ) {
+        std::fprintf(stderr, "INSERT INTO files: %s\n", sqlite3_errmsg(db));
+        return status;
+    }
+
     status = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
     if ( status != SQLITE_DONE ) {
         std::fprintf(stderr, "INSERT INTO files: %s\n", sqlite3_errmsg(db));
+        return status;
+    }
+
+    return 0;
+}
+
+//! status を DB に登録する
+//!
+//! @return 成功なら 0、失敗なら sqlite3 のエラーコード
+static int updateFileStatus(sqlite3* db, int fileId, FileStatus fileStatus)
+{
+    sqlite3_stmt* stmt = nullptr;
+    int status;
+
+    status = sqlite3_prepare_v2(
+        db,
+        "UPDATE files SET status = ? WHERE id = ?",
+        -1,
+        &stmt,
+        nullptr
+    );
+    if ( status ) {
+        std::fprintf(stderr, "updateFileStatus: %s\n", sqlite3_errmsg(db));
+        return status;
+    }
+
+    status = sqlite3_bind_int(stmt, 1, fileStatus);
+    if ( status ) {
+        std::fprintf(stderr, "updateFileStatus: %s\n", sqlite3_errmsg(db));
+        return status;
+    }
+
+    status = sqlite3_bind_int(stmt, 2, fileId);
+    if ( status ) {
+        std::fprintf(stderr, "updateFileStatus: %s\n", sqlite3_errmsg(db));
+        return status;
+    }
+
+    status = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if ( status != SQLITE_DONE ) {
+        std::fprintf(stderr, "updateFileStatus: %s\n", sqlite3_errmsg(db));
         return status;
     }
 
@@ -500,14 +568,14 @@ static int registerScene(sqlite3* db, const Scene& scene)
 //! @return 成功なら 0、失敗なら sqlite3 のエラーコード
 //!
 //! ファイルに紐づくシーンもすべて削除される。
-static int deleteFile(sqlite3* db, const fs::path& name)
+static int deleteFile(sqlite3* db, int fileId)
 {
     sqlite3_stmt* stmt = nullptr;
     int status;
 
     status = sqlite3_prepare_v2(
         db,
-        "DELETE FROM files WHERE path = ?",
+        "DELETE FROM files WHERE id = ?",
         -1,
         &stmt,
         nullptr
@@ -517,7 +585,7 @@ static int deleteFile(sqlite3* db, const fs::path& name)
         return status;
     }
 
-    status = sqlite3_bind_text(stmt, 1, name.c_str(), -1, nullptr);
+    status = sqlite3_bind_int(stmt, 1, fileId);
     if ( status ) {
         std::fprintf(stderr, "DELETE FROM files: %s\n", sqlite3_errmsg(db));
         return status;
@@ -582,7 +650,11 @@ static int analyzeScenes(sqlite3* db, std::FILE* inStream, int fileId)
         nScenes += 1;
     }
 
-    std::fprintf(stdout, "%d scenes registered.\n", nScenes);
+    if ( updateFileStatus(db, fileId, FileStatus::kAnalyzed) ) {
+        return 1;
+    }
+
+    std::fprintf(stderr, "%d scenes registered.\n", nScenes);
 
     return 0;
 }
@@ -694,7 +766,7 @@ static int searchFile(sqlite3* db, int fileId)
             return 1;
         }
 
-        std::fprintf(stdout, "%8d %s\n", fileAndCount.second, name.c_str());
+        std::fprintf(stderr, "%8d %s\n", fileAndCount.second, name.c_str());
 
         i += 1;
         if ( i >= 10 ) {
@@ -768,7 +840,7 @@ int main(int argc, char* argv[])
 
     // open db
     sqlite3* db = nullptr;
-    int fileId = 0;
+    FileEntry fileEntry{};
 
     if ( int err = sqlite3_open(dbPath.c_str(), &db); err ) {
         std::fprintf(stderr, "sqlite3_open: %s\n", sqlite3_errmsg(db));
@@ -782,7 +854,7 @@ int main(int argc, char* argv[])
     }
 
     // exists file in db?
-    if ( getFileId(db, inName, fileId) ) {
+    if ( getFileEntry(db, inName, fileEntry) ) {
         exitCode = 1;
         goto Lfinalize;
     }
@@ -799,45 +871,55 @@ int main(int argc, char* argv[])
             return 1;
         }
 
-        if ( fileId >= 0 && ! isForced ) {
-            std::fprintf(stderr, "\"%s\" already exists.\n", inName.c_str());
-            exitCode = 0;
-            goto Lfinalize;
+        if ( fileEntry.id >= 0 ) {
+            if ( fileEntry.status == FileStatus::kAnalyzed ) {
+                if ( ! isForced ) {
+                    std::fprintf(stderr, "\"%s\" already exists.\n", inName.c_str());
+                    exitCode = 0;
+                    goto Lfinalize;
+                }
+            }
+
+            // どんな状態であろうとエントリが存在するなら消す
+            if ( deleteFile(db, fileEntry.id) ) {
+                exitCode = 1;
+                goto Lfinalize;
+            }
         }
 
-        if ( fileId < 0 && registerFile(db, inName) ) {
+        if ( registerFile(db, inName) ) {
             exitCode = 1;
             goto Lfinalize;
         }
-        if ( getFileId(db, inName, fileId) ) {
+        if ( getFileEntry(db, inName, fileEntry) ) {
             exitCode = 1;
             goto Lfinalize;
         }
 
-        std::fprintf(stdout, "analyzing \"%s\"\n", inName.c_str());
-        if ( analyzeScenes(db, inStream, fileId) ) {
+        std::fprintf(stderr, "analyzing \"%s\"\n", inName.c_str());
+        if ( analyzeScenes(db, inStream, fileEntry.id) ) {
             exitCode = 1;
             goto Lfinalize;
         }
     } else if ( mode == kDelete ) {
-        if ( fileId < 0 ) {
+        if ( fileEntry.id < 0 ) {
             std::fprintf(stderr, "\"%s\" not found.\n", inName.c_str());
             exitCode = 1;
             goto Lfinalize;
         }
 
-        if ( deleteFile(db, inName) ) {
+        if ( deleteFile(db, fileEntry.id) ) {
             exitCode = 1;
             goto Lfinalize;
         }
     } else if ( mode == kSearch ) {
-        if ( fileId < 0 ) {
+        if ( fileEntry.id < 0 ) {
             std::fprintf(stderr, "\"%s\" not found.\n", inName.c_str());
             exitCode = 1;
             goto Lfinalize;
         }
 
-        if ( searchFile(db, fileId) ) {
+        if ( searchFile(db, fileEntry.id) ) {
             exitCode = 1;
             goto Lfinalize;
         }
