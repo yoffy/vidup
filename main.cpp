@@ -800,7 +800,7 @@ int main(int argc, char* argv[])
 
         if ( fileId >= 0 && ! isForced ) {
             std::fprintf(stderr, "\"%s\" already exists.\n", inName.c_str());
-            exitCode = 1;
+            exitCode = 0;
             goto Lfinalize;
         }
 
