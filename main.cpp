@@ -20,6 +20,13 @@ struct Scene {
     int           fileId;
 };
 
+//! getTopHashes() の出力
+struct HashCount {
+    std::uint32_t hash;
+    std::uint32_t durationMs;
+    int           count;
+};
+
 enum FileStatus {
     kNone     = 0,
     kAnalyzed = 1,
@@ -194,10 +201,14 @@ static int createDatabase(const fs::path& path)
 
     // craete index scene_hash
     status = sqlite3_prepare_v2(
-        db, "CREATE INDEX IF NOT EXISTS scene_hash ON scenes(hash)", -1, &stmt, nullptr
+        db,
+        "CREATE INDEX IF NOT EXISTS scene_hash_duration ON scenes(hash, duration_ms);",
+        -1,
+        &stmt,
+        nullptr
     );
     if ( status ) {
-        std::fprintf(stderr, "CREATE INDEX scene_hash: %s\n", sqlite3_errmsg(db));
+        std::fprintf(stderr, "CREATE INDEX scene_hash_duration: %s\n", sqlite3_errmsg(db));
         sqlite3_close(db);
         return 1;
     }
@@ -205,7 +216,7 @@ static int createDatabase(const fs::path& path)
     status = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
     if ( status != SQLITE_DONE ) {
-        std::fprintf(stderr, "CREATE INDEX scene_hash: %s\n", sqlite3_errmsg(db));
+        std::fprintf(stderr, "CREATE INDEX scene_hash_duration: %s\n", sqlite3_errmsg(db));
         sqlite3_close(db);
         return 1;
     }
@@ -360,13 +371,19 @@ static int getScenesByFile(sqlite3* db, int fileId, std::vector<Scene>& scenes)
 //! @return 成功なら 0、失敗なら sqlite3 のエラーコード
 //!
 //! scenes はクリアされず追記される。
-static int getScenesByHash(sqlite3* db, std::uint32_t hash, std::vector<Scene>& scenes)
+static int getScenesByHash(
+    sqlite3* db, std::uint32_t hash, std::uint32_t durationMs, std::vector<Scene>& scenes
+)
 {
     sqlite3_stmt* stmt = nullptr;
     int           status;
 
     status = sqlite3_prepare_v2(
-        db, "SELECT DISTINCT duration_ms, file_id FROM scenes WHERE hash = ?", -1, &stmt, nullptr
+        db,
+        "SELECT DISTINCT file_id FROM scenes WHERE (hash = ? AND duration_ms = ?)",
+        -1,
+        &stmt,
+        nullptr
     );
     if ( status ) {
         std::fprintf(stderr, "getScenesByHash: %s\n", sqlite3_errmsg(db));
@@ -378,11 +395,15 @@ static int getScenesByHash(sqlite3* db, std::uint32_t hash, std::vector<Scene>& 
         std::fprintf(stderr, "getScenesByHash: %s\n", sqlite3_errmsg(db));
         return status;
     }
+    status = sqlite3_bind_int(stmt, 2, durationMs);
+    if ( status ) {
+        std::fprintf(stderr, "getScenesByHash: %s\n", sqlite3_errmsg(db));
+        return status;
+    }
 
     status = sqlite3_step(stmt);
     while ( status == SQLITE_ROW ) {
-        std::uint32_t durationMs = sqlite3_column_int(stmt, 0);
-        int           fileId     = sqlite3_column_int(stmt, 1);
+        int fileId = sqlite3_column_int(stmt, 0);
 
         scenes.emplace_back(Scene { hash, durationMs, fileId });
         status = sqlite3_step(stmt);
@@ -391,6 +412,59 @@ static int getScenesByHash(sqlite3* db, std::uint32_t hash, std::vector<Scene>& 
 
     if ( status != SQLITE_DONE ) {
         std::fprintf(stderr, "getScenesByHash: %s\n", sqlite3_errmsg(db));
+        return status;
+    }
+
+    return 0;
+}
+
+//! 重複したハッシュの上位を取得する
+//!
+//! @return 成功なら 0、失敗なら sqlite3 のエラーコード
+//!
+//! hashCounts はクリア後にカウントされる。
+//! hashCounts は duration の降順でソートされている。
+static int getTopHashes(sqlite3* db, int limit, std::vector<HashCount>& hashCounts)
+{
+    sqlite3_stmt* stmt = nullptr;
+    int           status;
+
+    hashCounts.clear();
+
+    status = sqlite3_prepare_v2(
+        db,
+        "SELECT hash, duration_ms, COUNT(hash) FROM scenes"
+        " GROUP BY hash, duration_ms"
+        " HAVING COUNT(hash) > 1"
+        " ORDER BY duration_ms DESC LIMIT ?",
+        -1,
+        &stmt,
+        nullptr
+    );
+    if ( status ) {
+        std::fprintf(stderr, "getTopHashes: %s\n", sqlite3_errmsg(db));
+        return status;
+    }
+
+    status = sqlite3_bind_int(stmt, 1, limit);
+    if ( status ) {
+        std::fprintf(stderr, "getTopHashes: %s\n", sqlite3_errmsg(db));
+        return status;
+    }
+
+    status = sqlite3_step(stmt);
+    while ( status == SQLITE_ROW ) {
+        std::uint32_t hash       = sqlite3_column_int(stmt, 0);
+        std::uint32_t durationMs = sqlite3_column_int(stmt, 1);
+        int           count      = sqlite3_column_int(stmt, 2);
+
+        hashCounts.emplace_back(HashCount { hash, durationMs, count });
+        status = sqlite3_step(stmt);
+    }
+    sqlite3_finalize(stmt);
+
+    if ( status != SQLITE_DONE ) {
+        std::fprintf(stderr, "getTopHashes: %s\n", sqlite3_errmsg(db));
         return status;
     }
 
@@ -644,7 +718,7 @@ countScenes(const std::vector<Scene>& scenes, std::vector<std::pair<int, int>>& 
 //! 類似のファイルを検索する
 //!
 //! @return 成功なら 0
-static int searchFile(sqlite3* db, int fileId)
+static int searchFile(sqlite3* db, int fileId, int limit)
 {
     std::vector<Scene> scenesOfFile;
     std::vector<Scene> foundScenes;
@@ -655,8 +729,9 @@ static int searchFile(sqlite3* db, int fileId)
     }
 
     // fileId のシーンと同じハッシュを含むシーンを列挙
+    // TODO: SQL で COUNT すればいいのでは
     for ( const auto& scene : scenesOfFile ) {
-        if ( getScenesByHash(db, scene.hash, foundScenes) ) {
+        if ( getScenesByHash(db, scene.hash, scene.durationMs, foundScenes) ) {
             return 1;
         }
     }
@@ -688,10 +763,10 @@ static int searchFile(sqlite3* db, int fileId)
 
     // カウントの多い順にソート
     std::sort(fileAndCounts.begin(), fileAndCounts.end(), [&](const auto& a, const auto& b) {
-        return a.second < b.second;
+        return a.second > b.second;
     });
 
-    // トップ10を出力
+    // 上位 limit 件を出力
     if ( fileAndCounts.empty() ) {
         std::fprintf(stderr, "no duplicated videos.\n");
         return 0;
@@ -708,9 +783,48 @@ static int searchFile(sqlite3* db, int fileId)
         std::fprintf(stderr, "%8d %s\n", fileAndCount.second, name.c_str());
 
         i += 1;
-        if ( i >= 10 ) {
+        if ( i >= limit ) {
             break;
         }
+    }
+
+    return 0;
+}
+
+//! 類似のシーン上位 limit 件を出力する
+//!
+//! @return 成功なら 0
+static int top(sqlite3* db, int limit)
+{
+    std::vector<HashCount> hashCounts;
+
+    if ( getTopHashes(db, limit, hashCounts) ) {
+        return 1;
+    }
+
+    // hashCounts と同じハッシュを含むシーンを列挙
+    int i = 0;
+    for ( const HashCount& hashCount : hashCounts ) {
+        std::vector<Scene> foundScenes;
+
+        if ( getScenesByHash(db, hashCount.hash, hashCount.durationMs, foundScenes) ) {
+            return 1;
+        }
+
+        // 同じシーンを含むファイル名を列挙
+        std::fprintf(stderr, "---- %8.1f seconds matched\n", hashCount.durationMs / 1000.0);
+
+        for ( const Scene& scene : foundScenes ) {
+            fs::path name;
+
+            if ( getFileName(db, scene.fileId, name) ) {
+                return 1;
+            }
+
+            std::fprintf(stderr, "%s\n", name.c_str());
+        }
+
+        i += 1;
     }
 
     return 0;
@@ -723,9 +837,10 @@ static void usage()
     std::puts("       vidup [--dry-run --force -v] --stdin filename");
     std::puts("       vidup --delete filename");
     std::puts("       vidup --search filename");
+    std::puts("       vidup --top");
 }
 
-enum CommandMode { kAnalyze, kDelete, kSearch };
+enum CommandMode { kAnalyze, kDelete, kSearch, kTop };
 
 int main(int argc, char* argv[])
 {
@@ -758,9 +873,11 @@ int main(int argc, char* argv[])
         } else if ( arg == "--stdin" ) {
             inStream = stdin;
         } else if ( arg == "--delete" ) {
-            mode = kDelete;
+            mode = CommandMode::kDelete;
         } else if ( arg == "--search" ) {
-            mode = kSearch;
+            mode = CommandMode::kSearch;
+        } else if ( arg == "--top" ) {
+            mode = CommandMode::kTop;
         } else {
             std::fprintf(stderr, "unknown: %s\n", arg.c_str());
             usage();
@@ -770,18 +887,11 @@ int main(int argc, char* argv[])
         iArg += 1;
     }
 
-    // inPath
-    if ( iArg >= argc ) {
-        usage();
-        return 1;
-    }
-
-    fs::path inPath = argv[iArg];
-    fs::path inName = inPath.stem();
-
     // open db
     sqlite3*  db = nullptr;
     FileEntry fileEntry {};
+    fs::path  inPath;
+    fs::path  inName;
 
     if ( int err = sqlite3_open(dbPath.c_str(), &db); err ) {
         std::fprintf(stderr, "sqlite3_open: %s\n", sqlite3_errmsg(db));
@@ -794,13 +904,31 @@ int main(int argc, char* argv[])
         goto Lfinalize;
     }
 
+    if ( mode == CommandMode::kTop ) {
+        if ( top(db, 10) ) {
+            exitCode = 1;
+        }
+
+        sqlite3_close(db);
+        return exitCode;
+    }
+
+    // inPath
+    if ( iArg >= argc ) {
+        usage();
+        return 1;
+    }
+
+    inPath = argv[iArg];
+    inName = inPath.stem();
+
     // exists file in db?
     if ( getFileEntry(db, inName, fileEntry) ) {
         exitCode = 1;
         goto Lfinalize;
     }
 
-    if ( mode == kAnalyze ) {
+    if ( mode == CommandMode::kAnalyze ) {
         // open inStream
         if ( ! inStream ) {
             const char* inputPath = argv[iArg];
@@ -844,7 +972,7 @@ int main(int argc, char* argv[])
             exitCode = 1;
             goto Lfinalize;
         }
-    } else if ( mode == kDelete ) {
+    } else if ( mode == CommandMode::kDelete ) {
         if ( fileEntry.id < 0 ) {
             std::fprintf(stderr, "\"%s\" not found.\n", inName.c_str());
             exitCode = 1;
@@ -855,14 +983,14 @@ int main(int argc, char* argv[])
             exitCode = 1;
             goto Lfinalize;
         }
-    } else if ( mode == kSearch ) {
+    } else if ( mode == CommandMode::kSearch ) {
         if ( fileEntry.id < 0 ) {
             std::fprintf(stderr, "\"%s\" not found.\n", inName.c_str());
             exitCode = 1;
             goto Lfinalize;
         }
 
-        if ( searchFile(db, fileEntry.id) ) {
+        if ( searchFile(db, fileEntry.id, 10) ) {
             exitCode = 1;
             goto Lfinalize;
         }

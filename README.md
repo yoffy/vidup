@@ -48,15 +48,27 @@ Or, pipe with `vidup --stdin`:
 $ ffmpeg -loglevel error -i myvideo.mp4 -vf scale=16:16:flags=area -r 12 -an -c:v rawvideo -f rawvideo -pix_fmt gray - | vidup --stdin myvideo
 ```
 
-## Unregister a video
+### Unregister a video
 
 ```sh
 $ vidup --delete myvideo
 ```
 
-## Search duplicated videos
+### Search duplicated videos
 
 List similar videos top ten.
+
+```sh
+$ vidup --top
+----    123.4 seconds matched
+foo
+bar
+----     56.7 seconds matched
+baz
+bax
+```
+
+List videos similar to `myvideo`:
 
 ```sh
 $ vidup --search myvideo
