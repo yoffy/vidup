@@ -627,6 +627,8 @@ static int analyzeScenes(sqlite3* db, std::FILE* inStream, int fileId)
                 if ( db && registerScene(db, {crc, durationMs, fileId}) ) {
                     return 1;
                 }
+            } else {
+                debugPrintf("\n");
             }
             crc = 0;
             nScenes += 1;
