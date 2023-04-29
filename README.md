@@ -19,12 +19,18 @@ $ make
 
 ## Usage
 
-### Register video
+### Initialize the database
+
+```sh
+$ vidup --init
+```
+
+### Register a video
 
 Convert your video into 16x16 pixels, 12 fps, grayscale raw format:
 
 ```sh
-$ ffmpeg -i myvideo.mp4 -vf scale=16:16:flags=area -r 12 -an -c:v rawvideo -f rawvideo -pix_fmt gray myvideo.gray
+$ ffmpeg -loglevel error -i myvideo.mp4 -vf scale=16:16:flags=area -r 12 -an -c:v rawvideo -f rawvideo -pix_fmt gray myvideo.gray
 ```
 
 The pixel format is hardcoded and cannot be changed.
@@ -38,11 +44,23 @@ $ vidup myvideo.gray
 Or, pipe with `vidup --stdin`:
 
 ```sh
-$ ffmpeg -i myvideo.mp4 -vf scale=16:16:flags=area -r 12 -an -c:v rawvideo -f rawvideo -pix_fmt gray - | vidup --stdin myvideo
+$ ffmpeg -loglevel error -i myvideo.mp4 -vf scale=16:16:flags=area -r 12 -an -c:v rawvideo -f rawvideo -pix_fmt gray - | vidup --stdin myvideo
 ```
 
-## Unregister video
+## Unregister a video
 
 ```sh
 $ vidup --delete myvideo
 ```
+
+## Search duplicated videos
+
+List similar videos top ten.
+
+```sh
+$ vidup --search myvideo
+       4 foo
+       1 bar
+```
+
+The number on the left is the number of matched scenes.
