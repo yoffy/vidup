@@ -46,14 +46,15 @@ static std::uint32_t crc32acc(std::uint32_t acc, std::size_t size, const std::ui
 //! root mean squared error
 static double rmse(const std::uint8_t* __restrict frame1, const std::uint8_t* __restrict frame2)
 {
-    double rse = 0;
-    for ( int i = 0; i < 16*16; i += 1 ) {
-        double delta = double(frame1[i]) - frame2[i];
+    // 8-bit の自乗なので 16-bit、kFrameSize が 16-bit 以下ならオーバーフローしない
+    std::uint32_t rse = 0;
+    for ( std::size_t i = 0; i < kFrameSize; i += 1 ) {
+        std::int16_t delta = std::int16_t(frame1[i]) - frame2[i];
         rse += delta * delta;
     }
 
-    // divide by w*h*gray
-    return std::sqrt(rse / (16*16*256));
+    // divide by kFrameSize*gray
+    return std::sqrt(float(rse) / (kFrameSize*256));
 }
 
 static bool readFrame(std::FILE* stream, std::uint8_t* __restrict dest)
@@ -550,7 +551,7 @@ static int analyzeScenes(sqlite3* db, std::FILE* inStream, int fileId)
     while ( readFrame(inStream, frame) ) {
         double error = rmse(frame, lastFrame);
         debugPrintf("%8d (%6.1f): %6.1f: %08X", i, double(i)/kFps, error, crc);
-        if ( error > 4.5 ) {
+        if ( error > kSceneChangedThreshold ) {
             // scene changed
             if ( i > 0 ) {
                 debugPrintf(" scene changed\n");
