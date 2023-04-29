@@ -10,6 +10,7 @@ Find duplicated videos.
 * libsqlite3-dev 3.6.19+
 * make
 * C++17
+* clang-format 14+
 
 ## Build
 

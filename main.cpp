@@ -14,43 +14,41 @@
 
 namespace fs = std::filesystem;
 
-struct Scene
-{
+struct Scene {
     std::uint32_t hash;
     std::uint32_t durationMs;
-    int fileId;
+    int           fileId;
 };
 
-enum FileStatus
-{
-    kNone = 0,
+enum FileStatus {
+    kNone     = 0,
     kAnalyzed = 1,
 };
 
-struct FileEntry
-{
-    int id;
+struct FileEntry {
+    int      id;
     fs::path name;
-    int status; //!< FileStatus
+    int      status; //!< FileStatus
 };
 
 //! gray 16x16px
-static const std::size_t kFrameSize = 16*16;
-static const int kFps = 12;
-static const double kSceneChangedThreshold = 4.5;
+static const std::size_t kFrameSize             = 16 * 16;
+static const int         kFps                   = 12;
+static const double      kSceneChangedThreshold = 4.5;
 
 static bool g_isVerbose = false;
 
 // TODO: use CLMUL
-static std::uint32_t crc32acc(std::uint32_t acc, std::size_t size, const std::uint8_t* __restrict buf)
+static std::uint32_t
+crc32acc(std::uint32_t acc, std::size_t size, const std::uint8_t* __restrict buf)
 {
     std::uint64_t acc64 = acc;
-    std::size_t i = 0;
-    for (; i + 8 <= size; i += sizeof(std::uint64_t)) {
+    std::size_t   i     = 0;
+    for ( ; i + 8 <= size; i += sizeof(std::uint64_t) ) {
         acc64 = _mm_crc32_u64(acc, *reinterpret_cast<const std::uint64_t*>(&buf[i]));
     }
     acc = std::uint32_t(acc64);
-    for (; i < size; i += 1) {
+    for ( ; i < size; i += 1 ) {
         acc = _mm_crc32_u8(acc, buf[i]);
     }
     return acc;
@@ -67,7 +65,7 @@ static double rmse(const std::uint8_t* __restrict frame1, const std::uint8_t* __
     }
 
     // divide by kFrameSize*gray
-    return std::sqrt(float(rse) / (kFrameSize*256));
+    return std::sqrt(float(rse) / (kFrameSize * 256));
 }
 
 static bool readFrame(std::FILE* stream, std::uint8_t* __restrict dest)
@@ -102,14 +100,8 @@ static void debugPrintf(const char* __restrict format, ...)
 //! 失敗した場合は標準エラーにメッセージを出力する。
 static int enableForeignKeys(sqlite3* db)
 {
-    sqlite3_stmt* stmt = nullptr;
-    int status = sqlite3_prepare_v2(
-        db,
-        "PRAGMA foreign_keys = ON",
-        -1,
-        &stmt,
-        nullptr
-    );
+    sqlite3_stmt* stmt   = nullptr;
+    int           status = sqlite3_prepare_v2(db, "PRAGMA foreign_keys = ON", -1, &stmt, nullptr);
     if ( status ) {
         std::fprintf(stderr, "PRAGMA foreign_keys = ON: %s\n", sqlite3_errmsg(db));
         return 1;
@@ -130,9 +122,9 @@ static int enableForeignKeys(sqlite3* db)
 //! @return 成功なら 0
 static int createDatabase(const fs::path& path)
 {
-    sqlite3* db = nullptr;
+    sqlite3*      db   = nullptr;
     sqlite3_stmt* stmt = nullptr;
-    int status;
+    int           status;
 
     // open db
     if ( int err = sqlite3_open(path.c_str(), &db); err ) {
@@ -151,9 +143,9 @@ static int createDatabase(const fs::path& path)
     status = sqlite3_prepare_v2(
         db,
         "CREATE TABLE IF NOT EXISTS files("
-            "id INTEGER PRIMARY KEY,"
-            "path TEXT UNIQUE,"
-            "status INTEGER"
+        "id INTEGER PRIMARY KEY,"
+        "path TEXT UNIQUE,"
+        "status INTEGER"
         ")",
         -1,
         &stmt,
@@ -177,10 +169,10 @@ static int createDatabase(const fs::path& path)
     status = sqlite3_prepare_v2(
         db,
         "CREATE TABLE IF NOT EXISTS scenes("
-            "hash INTEGER,"
-            "duration_ms INTEGER,"
-            "file_id INTEGER,"
-            "FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE"
+        "hash INTEGER,"
+        "duration_ms INTEGER,"
+        "file_id INTEGER,"
+        "FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE"
         ")",
         -1,
         &stmt,
@@ -202,11 +194,7 @@ static int createDatabase(const fs::path& path)
 
     // craete index scene_hash
     status = sqlite3_prepare_v2(
-        db,
-        "CREATE INDEX IF NOT EXISTS scene_hash ON scenes(hash)",
-        -1,
-        &stmt,
-        nullptr
+        db, "CREATE INDEX IF NOT EXISTS scene_hash ON scenes(hash)", -1, &stmt, nullptr
     );
     if ( status ) {
         std::fprintf(stderr, "CREATE INDEX scene_hash: %s\n", sqlite3_errmsg(db));
@@ -224,11 +212,7 @@ static int createDatabase(const fs::path& path)
 
     // create index scene_file_id
     status = sqlite3_prepare_v2(
-        db,
-        "CREATE INDEX IF NOT EXISTS scene_file_id ON scenes(file_id)",
-        -1,
-        &stmt,
-        nullptr
+        db, "CREATE INDEX IF NOT EXISTS scene_file_id ON scenes(file_id)", -1, &stmt, nullptr
     );
     if ( status ) {
         std::fprintf(stderr, "CREATE INDEX scene_file_id: %s\n", sqlite3_errmsg(db));
@@ -256,17 +240,12 @@ static int createDatabase(const fs::path& path)
 static int getFileEntry(sqlite3* db, const fs::path& name, FileEntry& entry)
 {
     sqlite3_stmt* stmt = nullptr;
-    int status;
+    int           status;
 
     entry.id = -1;
 
-    status = sqlite3_prepare_v2(
-        db,
-        "SELECT id, status FROM files WHERE path = ?",
-        -1,
-        &stmt,
-        nullptr
-    );
+    status
+        = sqlite3_prepare_v2(db, "SELECT id, status FROM files WHERE path = ?", -1, &stmt, nullptr);
     if ( status ) {
         std::fprintf(stderr, "SELECT id from files: %s\n", sqlite3_errmsg(db));
         return status;
@@ -288,8 +267,8 @@ static int getFileEntry(sqlite3* db, const fs::path& name, FileEntry& entry)
         return status;
     }
 
-    entry.id = sqlite3_column_int(stmt, 0);
-    entry.name = name;
+    entry.id     = sqlite3_column_int(stmt, 0);
+    entry.name   = name;
     entry.status = sqlite3_column_int(stmt, 1);
 
     sqlite3_finalize(stmt);
@@ -302,15 +281,9 @@ static int getFileEntry(sqlite3* db, const fs::path& name, FileEntry& entry)
 static int getFileName(sqlite3* db, int fileId, fs::path& name)
 {
     sqlite3_stmt* stmt = nullptr;
-    int status;
+    int           status;
 
-    status = sqlite3_prepare_v2(
-        db,
-        "SELECT path FROM files WHERE id = ?",
-        -1,
-        &stmt,
-        nullptr
-    );
+    status = sqlite3_prepare_v2(db, "SELECT path FROM files WHERE id = ?", -1, &stmt, nullptr);
     if ( status ) {
         std::fprintf(stderr, "SELECT path from files: %s\n", sqlite3_errmsg(db));
         return status;
@@ -338,7 +311,6 @@ static int getFileName(sqlite3* db, int fileId, fs::path& name)
 
     sqlite3_finalize(stmt);
     return 0;
-
 }
 
 //! fileId のシーンを取得する
@@ -349,14 +321,10 @@ static int getFileName(sqlite3* db, int fileId, fs::path& name)
 static int getScenesByFile(sqlite3* db, int fileId, std::vector<Scene>& scenes)
 {
     sqlite3_stmt* stmt = nullptr;
-    int status;
+    int           status;
 
     status = sqlite3_prepare_v2(
-        db,
-        "SELECT hash, duration_ms FROM scenes WHERE file_id = ?",
-        -1,
-        &stmt,
-        nullptr
+        db, "SELECT hash, duration_ms FROM scenes WHERE file_id = ?", -1, &stmt, nullptr
     );
     if ( status ) {
         std::fprintf(stderr, "getScenesByFile: %s\n", sqlite3_errmsg(db));
@@ -371,10 +339,10 @@ static int getScenesByFile(sqlite3* db, int fileId, std::vector<Scene>& scenes)
 
     status = sqlite3_step(stmt);
     while ( status == SQLITE_ROW ) {
-        std::uint32_t hash = sqlite3_column_int(stmt, 0);
+        std::uint32_t hash       = sqlite3_column_int(stmt, 0);
         std::uint32_t durationMs = sqlite3_column_int(stmt, 1);
 
-        scenes.emplace_back(Scene{hash, durationMs, fileId});
+        scenes.emplace_back(Scene { hash, durationMs, fileId });
         status = sqlite3_step(stmt);
     }
     sqlite3_finalize(stmt);
@@ -395,14 +363,10 @@ static int getScenesByFile(sqlite3* db, int fileId, std::vector<Scene>& scenes)
 static int getScenesByHash(sqlite3* db, std::uint32_t hash, std::vector<Scene>& scenes)
 {
     sqlite3_stmt* stmt = nullptr;
-    int status;
+    int           status;
 
     status = sqlite3_prepare_v2(
-        db,
-        "SELECT DISTINCT duration_ms, file_id FROM scenes WHERE hash = ?",
-        -1,
-        &stmt,
-        nullptr
+        db, "SELECT DISTINCT duration_ms, file_id FROM scenes WHERE hash = ?", -1, &stmt, nullptr
     );
     if ( status ) {
         std::fprintf(stderr, "getScenesByHash: %s\n", sqlite3_errmsg(db));
@@ -418,9 +382,9 @@ static int getScenesByHash(sqlite3* db, std::uint32_t hash, std::vector<Scene>& 
     status = sqlite3_step(stmt);
     while ( status == SQLITE_ROW ) {
         std::uint32_t durationMs = sqlite3_column_int(stmt, 0);
-        int fileId = sqlite3_column_int(stmt, 1);
+        int           fileId     = sqlite3_column_int(stmt, 1);
 
-        scenes.emplace_back(Scene{hash, durationMs, fileId});
+        scenes.emplace_back(Scene { hash, durationMs, fileId });
         status = sqlite3_step(stmt);
     }
     sqlite3_finalize(stmt);
@@ -439,14 +403,10 @@ static int getScenesByHash(sqlite3* db, std::uint32_t hash, std::vector<Scene>& 
 static int registerFile(sqlite3* db, const fs::path& name)
 {
     sqlite3_stmt* stmt = nullptr;
-    int status;
+    int           status;
 
     status = sqlite3_prepare_v2(
-        db,
-        "INSERT INTO files (path, status) VALUES (?, ?)",
-        -1,
-        &stmt,
-        nullptr
+        db, "INSERT INTO files (path, status) VALUES (?, ?)", -1, &stmt, nullptr
     );
     if ( status ) {
         std::fprintf(stderr, "INSERT INTO files: %s\n", sqlite3_errmsg(db));
@@ -481,15 +441,9 @@ static int registerFile(sqlite3* db, const fs::path& name)
 static int updateFileStatus(sqlite3* db, int fileId, FileStatus fileStatus)
 {
     sqlite3_stmt* stmt = nullptr;
-    int status;
+    int           status;
 
-    status = sqlite3_prepare_v2(
-        db,
-        "UPDATE files SET status = ? WHERE id = ?",
-        -1,
-        &stmt,
-        nullptr
-    );
+    status = sqlite3_prepare_v2(db, "UPDATE files SET status = ? WHERE id = ?", -1, &stmt, nullptr);
     if ( status ) {
         std::fprintf(stderr, "updateFileStatus: %s\n", sqlite3_errmsg(db));
         return status;
@@ -523,14 +477,10 @@ static int updateFileStatus(sqlite3* db, int fileId, FileStatus fileStatus)
 static int registerScene(sqlite3* db, const Scene& scene)
 {
     sqlite3_stmt* stmt = nullptr;
-    int status;
+    int           status;
 
     status = sqlite3_prepare_v2(
-        db,
-        "INSERT INTO scenes (hash, duration_ms, file_id) VALUES (?, ?, ?)",
-        -1,
-        &stmt,
-        nullptr
+        db, "INSERT INTO scenes (hash, duration_ms, file_id) VALUES (?, ?, ?)", -1, &stmt, nullptr
     );
     if ( status ) {
         std::fprintf(stderr, "INSERT INTO scenes: %s\n", sqlite3_errmsg(db));
@@ -571,15 +521,9 @@ static int registerScene(sqlite3* db, const Scene& scene)
 static int deleteFile(sqlite3* db, int fileId)
 {
     sqlite3_stmt* stmt = nullptr;
-    int status;
+    int           status;
 
-    status = sqlite3_prepare_v2(
-        db,
-        "DELETE FROM files WHERE id = ?",
-        -1,
-        &stmt,
-        nullptr
-    );
+    status = sqlite3_prepare_v2(db, "DELETE FROM files WHERE id = ?", -1, &stmt, nullptr);
     if ( status ) {
         std::fprintf(stderr, "DELETE FROM files: %s\n", sqlite3_errmsg(db));
         return status;
@@ -606,25 +550,25 @@ static int deleteFile(sqlite3* db, int fileId)
 //! @return 成功なら 0
 static int analyzeScenes(sqlite3* db, std::FILE* inStream, int fileId)
 {
-    std::uint8_t frames[kFrameSize * 3] = {0};
-    std::uint8_t* firstFrame = &frames[kFrameSize * 0];
-    std::uint8_t* lastFrame = &frames[kFrameSize * 1];
-    std::uint8_t* frame = &frames[kFrameSize * 2];
-    std::uint32_t crc = 0;
-    std::uint32_t nScenes = 0;
+    std::uint8_t  frames[kFrameSize * 3] = { 0 };
+    std::uint8_t* firstFrame             = &frames[kFrameSize * 0];
+    std::uint8_t* lastFrame              = &frames[kFrameSize * 1];
+    std::uint8_t* frame                  = &frames[kFrameSize * 2];
+    std::uint32_t crc                    = 0;
+    std::uint32_t nScenes                = 0;
 
-    std::uint32_t i = 0;
+    std::uint32_t i           = 0;
     std::uint32_t iFirstFrame = 0;
 
     while ( readFrame(inStream, frame) ) {
         double error = rmse(frame, lastFrame);
-        debugPrintf("%8d (%6.1f): %6.1f: %08X", i, double(i)/kFps, error, crc);
+        debugPrintf("%8d (%6.1f): %6.1f: %08X", i, double(i) / kFps, error, crc);
         if ( error > kSceneChangedThreshold ) {
             // scene changed
             if ( i > 0 ) {
                 debugPrintf(" scene changed\n");
                 std::uint32_t durationMs = (i - iFirstFrame) * 1000 / kFps;
-                if ( db && registerScene(db, {crc, durationMs, fileId}) ) {
+                if ( db && registerScene(db, { crc, durationMs, fileId }) ) {
                     return 1;
                 }
             } else {
@@ -646,7 +590,7 @@ static int analyzeScenes(sqlite3* db, std::FILE* inStream, int fileId)
 
     {
         std::uint32_t durationMs = (i - iFirstFrame) * 1000 / kFps;
-        if ( db && registerScene(db, {crc, durationMs, fileId}) ) {
+        if ( db && registerScene(db, { crc, durationMs, fileId }) ) {
             return 1;
         }
         nScenes += 1;
@@ -668,7 +612,8 @@ static int analyzeScenes(sqlite3* db, std::FILE* inStream, int fileId)
 //! scenes は fileId でソートされていること。
 //!
 //! fileAndCounts はクリア後にカウントされる。
-static int countScenes(const std::vector<Scene>& scenes, std::vector<std::pair<int, int>>& fileAndCounts)
+static int
+countScenes(const std::vector<Scene>& scenes, std::vector<std::pair<int, int>>& fileAndCounts)
 {
     fileAndCounts.clear();
 
@@ -679,18 +624,14 @@ static int countScenes(const std::vector<Scene>& scenes, std::vector<std::pair<i
         lower = std::lower_bound(
             lower,
             scenes.end(),
-            Scene{0, 0, fileId},
-            [&](const Scene& a, const Scene& b) {
-                return a.fileId < b.fileId;
-            }
+            Scene { 0, 0, fileId },
+            [&](const Scene& a, const Scene& b) { return a.fileId < b.fileId; }
         );
         auto upper = std::upper_bound(
             lower,
             scenes.end(),
-            Scene{0, 0, fileId},
-            [&](const Scene& a, const Scene& b) {
-                return a.fileId < b.fileId;
-            }
+            Scene { 0, 0, fileId },
+            [&](const Scene& a, const Scene& b) { return a.fileId < b.fileId; }
         );
 
         fileAndCounts.emplace_back(std::pair(fileId, upper - lower));
@@ -730,18 +671,14 @@ static int searchFile(sqlite3* db, int fileId)
     auto lower = std::lower_bound(
         foundScenes.begin(),
         foundScenes.end(),
-        Scene{0, 0, fileId},
-        [&](const Scene& a, const Scene& b) {
-            return a.fileId < b.fileId;
-        }
+        Scene { 0, 0, fileId },
+        [&](const Scene& a, const Scene& b) { return a.fileId < b.fileId; }
     );
     auto upper = std::upper_bound(
         foundScenes.begin(),
         foundScenes.end(),
-        Scene{0, 0, fileId},
-        [&](const Scene& a, const Scene& b) {
-            return a.fileId < b.fileId;
-        }
+        Scene { 0, 0, fileId },
+        [&](const Scene& a, const Scene& b) { return a.fileId < b.fileId; }
     );
     foundScenes.erase(lower, upper);
 
@@ -788,24 +725,19 @@ static void usage()
     std::puts("       vidup --search filename");
 }
 
-enum CommandMode
-{
-    kAnalyze,
-    kDelete,
-    kSearch
-};
+enum CommandMode { kAnalyze, kDelete, kSearch };
 
 int main(int argc, char* argv[])
 {
-    fs::path me = argv[0];
-    fs::path basedir = me.parent_path();
-    fs::path dbPath = basedir / "database";
-    std::FILE* inStream = nullptr;
-    CommandMode mode = kAnalyze;
-    bool isDryRun = false;
-    bool isForced = false;
+    fs::path    me       = argv[0];
+    fs::path    basedir  = me.parent_path();
+    fs::path    dbPath   = basedir / "database";
+    std::FILE*  inStream = nullptr;
+    CommandMode mode     = kAnalyze;
+    bool        isDryRun = false;
+    bool        isForced = false;
 
-    int iArg = 1;
+    int iArg     = 1;
     int exitCode = 0;
 
     // parse options
@@ -848,8 +780,8 @@ int main(int argc, char* argv[])
     fs::path inName = inPath.stem();
 
     // open db
-    sqlite3* db = nullptr;
-    FileEntry fileEntry{};
+    sqlite3*  db = nullptr;
+    FileEntry fileEntry {};
 
     if ( int err = sqlite3_open(dbPath.c_str(), &db); err ) {
         std::fprintf(stderr, "sqlite3_open: %s\n", sqlite3_errmsg(db));
@@ -935,7 +867,6 @@ int main(int argc, char* argv[])
             goto Lfinalize;
         }
     }
-
 
 Lfinalize:
     sqlite3_close(db);

@@ -9,5 +9,9 @@ all: $(TARGET)
 clean:
 	$(RM) $(TARGET) *.o
 
+.PHONY: format
+format:
+	clang-format -i *.cpp
+
 $(TARGET): main.o
 	$(CXX) $< $(LDFLAGS) -o $(TARGET)
