@@ -71,7 +71,7 @@ crc32acc(std::uint32_t acc, std::size_t size, const std::uint8_t* __restrict buf
     std::uint64_t acc64 = acc;
     std::size_t   i     = 0;
     for ( ; i + 8 <= size; i += sizeof(std::uint64_t) ) {
-        acc64 = _mm_crc32_u64(acc, *reinterpret_cast<const std::uint64_t*>(&buf[i]));
+        acc64 = _mm_crc32_u64(acc64, *reinterpret_cast<const std::uint64_t*>(&buf[i]));
     }
     acc = std::uint32_t(acc64);
     for ( ; i < size; i += 1 ) {
