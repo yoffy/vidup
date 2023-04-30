@@ -909,6 +909,29 @@ static int top(sqlite3* db, int limit)
     return 0;
 }
 
+//! fileId のシーンを出力する (デバッグ用)
+//!
+//! @return 成功なら 0
+static int showFileScenes(sqlite3* db, FileId fileId)
+{
+    std::vector<Scene> scenesOfFile;
+
+    std::fprintf(stdout, "file id: %d\n", fileId);
+
+    // fileId のシーンを列挙
+    if ( getScenesByFile(db, fileId, scenesOfFile) ) {
+        return 1;
+    }
+
+    // scenesOfFile を出力
+    std::fprintf(stdout, "hash     duration (ms)\n");
+    for ( const auto& scene : scenesOfFile ) {
+        std::fprintf(stdout, "%08X %8d\n", scene.sceneId.hash, scene.sceneId.durationMs);
+    }
+
+    return 0;
+}
+
 static void usage()
 {
     std::puts("usage: vidup --init");
@@ -917,9 +940,10 @@ static void usage()
     std::puts("       vidup --delete filename");
     std::puts("       vidup --search filename");
     std::puts("       vidup --top [limit]"); // limit はシーン数なので出力の数とは一致しない
+    // std::puts("       vidup --file-scenes filename"); // for debug
 }
 
-enum CommandMode { kAnalyze, kDelete, kSearch, kTop };
+enum CommandMode { kAnalyze, kDelete, kSearch, kTop, kFileScenes };
 
 int main(int argc, char* argv[])
 {
@@ -957,6 +981,8 @@ int main(int argc, char* argv[])
             mode = CommandMode::kSearch;
         } else if ( arg == "--top" ) {
             mode = CommandMode::kTop;
+        } else if ( arg == "--file-scenes" ) {
+            mode = CommandMode::kFileScenes;
         } else {
             std::fprintf(stderr, "unknown: %s\n", arg.c_str());
             usage();
@@ -1075,6 +1101,17 @@ int main(int argc, char* argv[])
         }
 
         if ( searchFile(db, fileEntry.id, 10) ) {
+            exitCode = 1;
+            goto Lfinalize;
+        }
+    } else if ( mode == CommandMode::kFileScenes ) {
+        if ( fileEntry.id < 0 ) {
+            std::fprintf(stderr, "\"%s\" not found.\n", inName.c_str());
+            exitCode = 1;
+            goto Lfinalize;
+        }
+
+        if ( showFileScenes(db, fileEntry.id) ) {
             exitCode = 1;
             goto Lfinalize;
         }
