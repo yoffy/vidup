@@ -36,18 +36,14 @@ static inline bool operator<(const SceneId& a, const SceneId& b)
 }
 
 struct Scene {
-    // TODO: SceneId にする
-    Hash       hash;
-    DurationMs durationMs;
-    FileId     fileId;
+    SceneId sceneId;
+    FileId  fileId;
 };
 
 //! getTopHashes() の出力
 struct HashCount {
-    // TODO: SceneId にする
-    Hash       hash;
-    DurationMs durationMs;
-    int        count;
+    SceneId sceneId;
+    int     count;
 };
 
 enum FileStatus {
@@ -376,7 +372,7 @@ static int getScenesByFile(sqlite3* db, FileId fileId, std::vector<Scene>& scene
         Hash       hash       = sqlite3_column_int(stmt, 0);
         DurationMs durationMs = sqlite3_column_int(stmt, 1);
 
-        scenes.emplace_back(Scene { hash, durationMs, fileId });
+        scenes.emplace_back(Scene { SceneId { hash, durationMs }, fileId });
         status = sqlite3_step(stmt);
     }
     sqlite3_finalize(stmt);
@@ -394,8 +390,7 @@ static int getScenesByFile(sqlite3* db, FileId fileId, std::vector<Scene>& scene
 //! @return 成功なら 0、失敗なら sqlite3 のエラーコード
 //!
 //! scenes はクリアされず追記される。
-static int
-getScenesByHash(sqlite3* db, Hash hash, DurationMs durationMs, std::vector<Scene>& scenes)
+static int getScenesByHash(sqlite3* db, const SceneId& sceneId, std::vector<Scene>& scenes)
 {
     sqlite3_stmt* stmt = nullptr;
     int           status;
@@ -412,12 +407,12 @@ getScenesByHash(sqlite3* db, Hash hash, DurationMs durationMs, std::vector<Scene
         return status;
     }
 
-    status = sqlite3_bind_int(stmt, 1, hash);
+    status = sqlite3_bind_int(stmt, 1, sceneId.hash);
     if ( status ) {
         std::fprintf(stderr, "getScenesByHash: %s\n", sqlite3_errmsg(db));
         return status;
     }
-    status = sqlite3_bind_int(stmt, 2, durationMs);
+    status = sqlite3_bind_int(stmt, 2, sceneId.durationMs);
     if ( status ) {
         std::fprintf(stderr, "getScenesByHash: %s\n", sqlite3_errmsg(db));
         return status;
@@ -427,7 +422,7 @@ getScenesByHash(sqlite3* db, Hash hash, DurationMs durationMs, std::vector<Scene
     while ( status == SQLITE_ROW ) {
         FileId fileId = sqlite3_column_int(stmt, 0);
 
-        scenes.emplace_back(Scene { hash, durationMs, fileId });
+        scenes.emplace_back(Scene { sceneId, fileId });
         status = sqlite3_step(stmt);
     }
     sqlite3_finalize(stmt);
@@ -482,7 +477,7 @@ static int getTopHashes(sqlite3* db, int limit, std::vector<HashCount>& hashCoun
         DurationMs durationMs = sqlite3_column_int(stmt, 1);
         int        count      = sqlite3_column_int(stmt, 2);
 
-        hashCounts.emplace_back(HashCount { hash, durationMs, count });
+        hashCounts.emplace_back(HashCount { SceneId { hash, durationMs }, count });
         status = sqlite3_step(stmt);
     }
     sqlite3_finalize(stmt);
@@ -585,12 +580,12 @@ static int registerScene(sqlite3* db, const Scene& scene)
         return status;
     }
 
-    status = sqlite3_bind_int(stmt, 1, scene.hash);
+    status = sqlite3_bind_int(stmt, 1, scene.sceneId.hash);
     if ( status ) {
         std::fprintf(stderr, "INSERT INTO scenes: %s\n", sqlite3_errmsg(db));
         return status;
     }
-    status = sqlite3_bind_int(stmt, 2, scene.durationMs);
+    status = sqlite3_bind_int(stmt, 2, scene.sceneId.durationMs);
     if ( status ) {
         std::fprintf(stderr, "INSERT INTO scenes: %s\n", sqlite3_errmsg(db));
         return status;
@@ -666,7 +661,7 @@ static int analyzeScenes(sqlite3* db, std::FILE* inStream, FileId fileId)
             if ( i > 0 ) {
                 debugPrintf(" scene changed\n");
                 DurationMs durationMs = (i - iFirstFrame) * 1000 / kFps;
-                if ( db && registerScene(db, { crc, durationMs, fileId }) ) {
+                if ( db && registerScene(db, { { crc, durationMs }, fileId }) ) {
                     return 1;
                 }
             } else {
@@ -755,7 +750,7 @@ static int searchFile(sqlite3* db, FileId fileId, int limit)
     // fileId のシーンと同じハッシュを含むシーンを列挙
     // TODO: SQL で COUNT すればいいのでは
     for ( const auto& scene : scenesOfFile ) {
-        if ( getScenesByHash(db, scene.hash, scene.durationMs, foundScenes) ) {
+        if ( getScenesByHash(db, scene.sceneId, foundScenes) ) {
             return 1;
         }
     }
@@ -830,12 +825,12 @@ static int top(sqlite3* db, int limit)
     int                i = 0;
     std::vector<Scene> foundScenes;
     for ( const HashCount& hashCount : hashCounts ) {
-        if ( getScenesByHash(db, hashCount.hash, hashCount.durationMs, foundScenes) ) {
+        if ( getScenesByHash(db, hashCount.sceneId, foundScenes) ) {
             return 1;
         }
 
         // 同じシーンを含むファイル名を列挙
-        debugPrintf("---- %8.1f seconds matched\n", hashCount.durationMs / 1000.0);
+        debugPrintf("---- %8.1f seconds matched\n", hashCount.sceneId.durationMs / 1000.0);
 
         i += 1;
     }
@@ -862,7 +857,7 @@ static int top(sqlite3* db, int limit)
 
     for ( const Scene& scene : foundScenes ) {
         fileScenes[scene.fileId].push_back(&scene);
-        hashScenes[{ scene.hash, scene.durationMs }].push_back(&scene);
+        hashScenes[scene.sceneId].push_back(&scene);
     }
 
     // 注目しているファイルと共有している時間を積算
@@ -875,13 +870,12 @@ static int top(sqlite3* db, int limit)
         auto&  relation = relationMap[fileId];
 
         for ( const Scene* fileScene : fileScenes[fileId] ) {
-            SceneId sceneId { fileScene->hash, fileScene->durationMs };
-            for ( const Scene* hashScene : hashScenes[sceneId] ) {
+            for ( const Scene* hashScene : hashScenes[fileScene->sceneId] ) {
                 if ( fileIds.count(hashScene->fileId) == 0 ) {
                     // B → A はやらない
                     continue;
                 }
-                relation[hashScene->fileId] += fileScene->durationMs;
+                relation[hashScene->fileId] += fileScene->sceneId.durationMs;
             }
         }
     }
