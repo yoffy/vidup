@@ -5,8 +5,7 @@ Find duplicated videos.
 ## Requirements
 
 * Linux
-* SSE 4.2 on Intel x86 architecture
-    * for crc32
+* x86_64 architecture with AVX2
 * libsqlite3-dev 3.6.19+
 * make
 * C++17
@@ -28,13 +27,16 @@ $ vidup --init
 
 ### Register a video
 
-Convert your video into 16x16 pixels, 12 fps, grayscale raw format:
+Convert your video into 16x16 pixels, 30 fps, grayscale raw format:
 
 ```sh
-$ ffmpeg -loglevel error -i myvideo.mp4 -vf scale=16:16:flags=area -r 12 -an -c:v rawvideo -f rawvideo -pix_fmt gray myvideo.gray
+$ ffmpeg -loglevel error -i myvideo.mp4 \
+  -vf scale=16:16:flags=area \
+  -r 30 -an -c:v rawvideo -f rawvideo -pix_fmt gray myvideo.gray
 ```
 
-The pixel format is hardcoded and cannot be changed.
+The pixel format is hardcoded and cannot be changed. But you can change the frame rate with
+`--frame-rate n` (e.g. `vidup --frame-rate 12`).
 
 Register it to database:
 
@@ -45,7 +47,9 @@ $ vidup myvideo.gray
 Or, pipe with `vidup --stdin`:
 
 ```sh
-$ ffmpeg -loglevel error -i myvideo.mp4 -vf scale=16:16:flags=area -r 12 -an -c:v rawvideo -f rawvideo -pix_fmt gray - | vidup --stdin myvideo
+$ ffmpeg -loglevel error -i myvideo.mp4 \
+  -vf scale=16:16:flags=area \
+  -r 30 -an -c:v rawvideo -f rawvideo -pix_fmt gray - | vidup --stdin myvideo
 ```
 
 ### Unregister a video

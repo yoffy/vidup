@@ -59,10 +59,10 @@ struct FileEntry {
 
 //! gray 16x16px
 static const std::size_t kFrameSize             = 16 * 16;
-static const int         kFps                   = 12;
 static const double      kSceneChangedThreshold = 4.5;
 
 static bool g_isVerbose = false;
+static int  g_FrameRate = 30;
 
 // TODO: use CLMUL
 static std::uint32_t
@@ -655,12 +655,12 @@ static int analyzeScenes(sqlite3* db, std::FILE* inStream, FileId fileId)
 
     while ( readFrame(inStream, frame) ) {
         double error = rmse(frame, lastFrame);
-        debugPrintf("%8d (%6.1f): %6.1f: %08X", i, double(i) / kFps, error, crc);
+        debugPrintf("%8d (%6.1f): %6.1f: %08X", i, double(i) / g_FrameRate, error, crc);
         if ( error > kSceneChangedThreshold ) {
             // scene changed
             if ( i > 0 ) {
                 debugPrintf(" scene changed\n");
-                DurationMs durationMs = (i - iFirstFrame) * 1000 / kFps;
+                DurationMs durationMs = (i - iFirstFrame) * 1000 / g_FrameRate;
                 if ( db && registerScene(db, { { crc, durationMs }, fileId }) ) {
                     return 1;
                 }
@@ -682,7 +682,7 @@ static int analyzeScenes(sqlite3* db, std::FILE* inStream, FileId fileId)
     }
 
     {
-        DurationMs durationMs = (i - iFirstFrame) * 1000 / kFps;
+        DurationMs durationMs = (i - iFirstFrame) * 1000 / g_FrameRate;
         if ( db && registerScene(db, { crc, durationMs, fileId }) ) {
             return 1;
         }
@@ -932,20 +932,38 @@ static int showFileScenes(sqlite3* db, FileId fileId)
     return 0;
 }
 
+//! argv[iArg] を int として取得する
+//!
+//! @return 成功なら 0
+static int parseArgvInt(int argc, const char** argv, int iArg, int& out)
+{
+    if ( iArg >= argc ) {
+        return 1;
+    }
+
+    const char* begin = argv[iArg];
+    char*       end   = nullptr;
+
+    out = int(std::strtol(begin, &end, 10));
+
+    // 空文字か途中でパースをやめたら失敗
+    return (begin == end || *end != '\0');
+}
+
 static void usage()
 {
     std::puts("usage: vidup --init");
-    std::puts("       vidup [--dry-run --force -v] file");
-    std::puts("       vidup [--dry-run --force -v] --stdin filename");
+    std::puts("       vidup [--dry-run] [--force] [-v] [--frame-rate n] file");
+    std::puts("       vidup [--dry-run] [--force] [-v] [--frame-rate n] --stdin filename");
     std::puts("       vidup --delete filename");
     std::puts("       vidup --search filename");
-    std::puts("       vidup --top [limit]"); // limit はシーン数なので出力の数とは一致しない
+    std::puts("       vidup --top [n]"); // n はシーン数なので出力の数とは一致しない
     // std::puts("       vidup --file-scenes filename"); // for debug
 }
 
 enum CommandMode { kAnalyze, kDelete, kSearch, kTop, kFileScenes };
 
-int main(int argc, char* argv[])
+int main(int argc, const char* argv[])
 {
     fs::path    me       = argv[0];
     fs::path    basedir  = me.parent_path();
@@ -983,6 +1001,12 @@ int main(int argc, char* argv[])
             mode = CommandMode::kTop;
         } else if ( arg == "--file-scenes" ) {
             mode = CommandMode::kFileScenes;
+        } else if ( arg == "--frame-rate" ) {
+            iArg += 1;
+            if ( parseArgvInt(argc, argv, iArg, g_FrameRate) ) {
+                usage();
+                return 1;
+            }
         } else {
             std::fprintf(stderr, "unknown: %s\n", arg.c_str());
             usage();
