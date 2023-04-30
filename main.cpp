@@ -916,7 +916,7 @@ static void usage()
     std::puts("       vidup [--dry-run --force -v] --stdin filename");
     std::puts("       vidup --delete filename");
     std::puts("       vidup --search filename");
-    std::puts("       vidup --top");
+    std::puts("       vidup --top [limit]"); // limit はシーン数なので出力の数とは一致しない
 }
 
 enum CommandMode { kAnalyze, kDelete, kSearch, kTop };
@@ -984,7 +984,12 @@ int main(int argc, char* argv[])
     }
 
     if ( mode == CommandMode::kTop ) {
-        if ( top(db, 10) ) {
+        int limit = 10;
+        if ( iArg + 1 == argc ) {
+            limit = std::atoi(argv[iArg]);
+            iArg += 1;
+        }
+        if ( top(db, limit) ) {
             exitCode = 1;
         }
 
