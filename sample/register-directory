@@ -1,0 +1,15 @@
+#!/bin/bash
+
+## Register the videos in the directory to the database
+
+set -eu -o pipefail
+
+if [[ $# -ne 1 ]] || [[ ! -d $1 ]]; then
+    echo "usage: register-directory directory"
+    exit 1
+fi
+
+while read FILE; do
+    </dev/null ffmpeg -loglevel error -i "${FILE}" -vf scale=16:16:flags=area -r 30 -an -c:v rawvideo -f rawvideo -pix_fmt gray - |
+        ./vidup --stdin --frame-rate 30 "${FILE}" && true
+done < <(find "$1" -name '*.mp4' -or -name '*.flv' -or -name '*.avi' -or -name '*.wmv' -or -name '*.ts')
