@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -14,17 +16,38 @@
 
 namespace fs = std::filesystem;
 
+typedef std::uint32_t Hash;
+typedef std::uint32_t DurationMs;
+typedef int           FileId; //!< 未設定は -1
+
+//! シーンを一意に識別するための値
+struct SceneId {
+    Hash       hash;
+    DurationMs durationMs;
+};
+
+static inline bool operator<(const SceneId& a, const SceneId& b)
+{
+    if ( a.hash != b.hash ) {
+        return a.hash < b.hash;
+    } else {
+        return a.durationMs < b.durationMs;
+    };
+}
+
 struct Scene {
-    std::uint32_t hash;
-    std::uint32_t durationMs;
-    int           fileId;
+    // TODO: SceneId にする
+    Hash       hash;
+    DurationMs durationMs;
+    FileId     fileId;
 };
 
 //! getTopHashes() の出力
 struct HashCount {
-    std::uint32_t hash;
-    std::uint32_t durationMs;
-    int           count;
+    // TODO: SceneId にする
+    Hash       hash;
+    DurationMs durationMs;
+    int        count;
 };
 
 enum FileStatus {
@@ -33,7 +56,7 @@ enum FileStatus {
 };
 
 struct FileEntry {
-    int      id;
+    FileId   id;
     fs::path name;
     int      status; //!< FileStatus
 };
@@ -289,7 +312,7 @@ static int getFileEntry(sqlite3* db, const fs::path& name, FileEntry& entry)
 //! fileId からファイル名を取得する
 //!
 //! @return 成功なら 0、失敗なら sqlite3 のエラーコード
-static int getFileName(sqlite3* db, int fileId, fs::path& name)
+static int getFileName(sqlite3* db, FileId fileId, fs::path& name)
 {
     sqlite3_stmt* stmt = nullptr;
     int           status;
@@ -329,7 +352,7 @@ static int getFileName(sqlite3* db, int fileId, fs::path& name)
 //! @return 成功なら 0、失敗なら sqlite3 のエラーコード
 //!
 //! scenes はクリアされず追記される。
-static int getScenesByFile(sqlite3* db, int fileId, std::vector<Scene>& scenes)
+static int getScenesByFile(sqlite3* db, FileId fileId, std::vector<Scene>& scenes)
 {
     sqlite3_stmt* stmt = nullptr;
     int           status;
@@ -350,8 +373,8 @@ static int getScenesByFile(sqlite3* db, int fileId, std::vector<Scene>& scenes)
 
     status = sqlite3_step(stmt);
     while ( status == SQLITE_ROW ) {
-        std::uint32_t hash       = sqlite3_column_int(stmt, 0);
-        std::uint32_t durationMs = sqlite3_column_int(stmt, 1);
+        Hash       hash       = sqlite3_column_int(stmt, 0);
+        DurationMs durationMs = sqlite3_column_int(stmt, 1);
 
         scenes.emplace_back(Scene { hash, durationMs, fileId });
         status = sqlite3_step(stmt);
@@ -371,9 +394,8 @@ static int getScenesByFile(sqlite3* db, int fileId, std::vector<Scene>& scenes)
 //! @return 成功なら 0、失敗なら sqlite3 のエラーコード
 //!
 //! scenes はクリアされず追記される。
-static int getScenesByHash(
-    sqlite3* db, std::uint32_t hash, std::uint32_t durationMs, std::vector<Scene>& scenes
-)
+static int
+getScenesByHash(sqlite3* db, Hash hash, DurationMs durationMs, std::vector<Scene>& scenes)
 {
     sqlite3_stmt* stmt = nullptr;
     int           status;
@@ -403,7 +425,7 @@ static int getScenesByHash(
 
     status = sqlite3_step(stmt);
     while ( status == SQLITE_ROW ) {
-        int fileId = sqlite3_column_int(stmt, 0);
+        FileId fileId = sqlite3_column_int(stmt, 0);
 
         scenes.emplace_back(Scene { hash, durationMs, fileId });
         status = sqlite3_step(stmt);
@@ -433,10 +455,12 @@ static int getTopHashes(sqlite3* db, int limit, std::vector<HashCount>& hashCoun
 
     status = sqlite3_prepare_v2(
         db,
-        "SELECT hash, duration_ms, COUNT(hash) FROM scenes"
+        "SELECT hash, duration_ms, COUNT(hash)"
+        " FROM scenes"
         " GROUP BY hash, duration_ms"
         " HAVING COUNT(hash) > 1"
-        " ORDER BY duration_ms DESC LIMIT ?",
+        " ORDER BY duration_ms DESC"
+        " LIMIT ?",
         -1,
         &stmt,
         nullptr
@@ -454,9 +478,9 @@ static int getTopHashes(sqlite3* db, int limit, std::vector<HashCount>& hashCoun
 
     status = sqlite3_step(stmt);
     while ( status == SQLITE_ROW ) {
-        std::uint32_t hash       = sqlite3_column_int(stmt, 0);
-        std::uint32_t durationMs = sqlite3_column_int(stmt, 1);
-        int           count      = sqlite3_column_int(stmt, 2);
+        Hash       hash       = sqlite3_column_int(stmt, 0);
+        DurationMs durationMs = sqlite3_column_int(stmt, 1);
+        int        count      = sqlite3_column_int(stmt, 2);
 
         hashCounts.emplace_back(HashCount { hash, durationMs, count });
         status = sqlite3_step(stmt);
@@ -512,7 +536,7 @@ static int registerFile(sqlite3* db, const fs::path& name)
 //! status を DB に登録する
 //!
 //! @return 成功なら 0、失敗なら sqlite3 のエラーコード
-static int updateFileStatus(sqlite3* db, int fileId, FileStatus fileStatus)
+static int updateFileStatus(sqlite3* db, FileId fileId, FileStatus fileStatus)
 {
     sqlite3_stmt* stmt = nullptr;
     int           status;
@@ -592,7 +616,7 @@ static int registerScene(sqlite3* db, const Scene& scene)
 //! @return 成功なら 0、失敗なら sqlite3 のエラーコード
 //!
 //! ファイルに紐づくシーンもすべて削除される。
-static int deleteFile(sqlite3* db, int fileId)
+static int deleteFile(sqlite3* db, FileId fileId)
 {
     sqlite3_stmt* stmt = nullptr;
     int           status;
@@ -622,13 +646,13 @@ static int deleteFile(sqlite3* db, int fileId)
 //! シーンを解析して DB に登録する
 //!
 //! @return 成功なら 0
-static int analyzeScenes(sqlite3* db, std::FILE* inStream, int fileId)
+static int analyzeScenes(sqlite3* db, std::FILE* inStream, FileId fileId)
 {
     std::uint8_t  frames[kFrameSize * 3] = { 0 };
     std::uint8_t* firstFrame             = &frames[kFrameSize * 0];
     std::uint8_t* lastFrame              = &frames[kFrameSize * 1];
     std::uint8_t* frame                  = &frames[kFrameSize * 2];
-    std::uint32_t crc                    = 0;
+    Hash          crc                    = 0;
     std::uint32_t nScenes                = 0;
 
     std::uint32_t i           = 0;
@@ -641,7 +665,7 @@ static int analyzeScenes(sqlite3* db, std::FILE* inStream, int fileId)
             // scene changed
             if ( i > 0 ) {
                 debugPrintf(" scene changed\n");
-                std::uint32_t durationMs = (i - iFirstFrame) * 1000 / kFps;
+                DurationMs durationMs = (i - iFirstFrame) * 1000 / kFps;
                 if ( db && registerScene(db, { crc, durationMs, fileId }) ) {
                     return 1;
                 }
@@ -663,7 +687,7 @@ static int analyzeScenes(sqlite3* db, std::FILE* inStream, int fileId)
     }
 
     {
-        std::uint32_t durationMs = (i - iFirstFrame) * 1000 / kFps;
+        DurationMs durationMs = (i - iFirstFrame) * 1000 / kFps;
         if ( db && registerScene(db, { crc, durationMs, fileId }) ) {
             return 1;
         }
@@ -687,13 +711,13 @@ static int analyzeScenes(sqlite3* db, std::FILE* inStream, int fileId)
 //!
 //! fileAndCounts はクリア後にカウントされる。
 static int
-countScenes(const std::vector<Scene>& scenes, std::vector<std::pair<int, int>>& fileAndCounts)
+countScenes(const std::vector<Scene>& scenes, std::vector<std::pair<FileId, int>>& fileAndCounts)
 {
     fileAndCounts.clear();
 
     auto lower = scenes.begin();
     while ( lower != scenes.end() ) {
-        int fileId = lower->fileId;
+        FileId fileId = lower->fileId;
 
         lower = std::lower_bound(
             lower,
@@ -718,7 +742,7 @@ countScenes(const std::vector<Scene>& scenes, std::vector<std::pair<int, int>>& 
 //! 類似のファイルを検索する
 //!
 //! @return 成功なら 0
-static int searchFile(sqlite3* db, int fileId, int limit)
+static int searchFile(sqlite3* db, FileId fileId, int limit)
 {
     std::vector<Scene> scenesOfFile;
     std::vector<Scene> foundScenes;
@@ -757,7 +781,7 @@ static int searchFile(sqlite3* db, int fileId, int limit)
     );
     foundScenes.erase(lower, upper);
 
-    std::vector<std::pair<int, int>> fileAndCounts;
+    std::vector<std::pair<FileId, int>> fileAndCounts;
 
     countScenes(foundScenes, fileAndCounts);
 
@@ -803,28 +827,89 @@ static int top(sqlite3* db, int limit)
     }
 
     // hashCounts と同じハッシュを含むシーンを列挙
-    int i = 0;
+    int                i = 0;
+    std::vector<Scene> foundScenes;
     for ( const HashCount& hashCount : hashCounts ) {
-        std::vector<Scene> foundScenes;
-
         if ( getScenesByHash(db, hashCount.hash, hashCount.durationMs, foundScenes) ) {
             return 1;
         }
 
         // 同じシーンを含むファイル名を列挙
-        std::fprintf(stderr, "---- %8.1f seconds matched\n", hashCount.durationMs / 1000.0);
-
-        for ( const Scene& scene : foundScenes ) {
-            fs::path name;
-
-            if ( getFileName(db, scene.fileId, name) ) {
-                return 1;
-            }
-
-            std::fprintf(stderr, "%s\n", name.c_str());
-        }
+        debugPrintf("---- %8.1f seconds matched\n", hashCount.durationMs / 1000.0);
 
         i += 1;
+    }
+
+    // ファイルを列挙
+    std::set<FileId>           fileIds;
+    std::map<FileId, fs::path> fileNames;
+
+    for ( const Scene& scene : foundScenes ) {
+        fileIds.insert(scene.fileId);
+    }
+    for ( FileId fileId : fileIds ) {
+        fs::path name;
+        if ( getFileName(db, fileId, name) ) {
+            return 1;
+        }
+        fileNames[fileId] = std::move(name);
+    }
+
+    // foundScenes をファイルとハッシュをキーに分類
+    // TODO: unorderd_multimap でいいのでは
+    std::map<FileId, std::vector<const Scene*>>  fileScenes;
+    std::map<SceneId, std::vector<const Scene*>> hashScenes;
+
+    for ( const Scene& scene : foundScenes ) {
+        fileScenes[scene.fileId].push_back(&scene);
+        hashScenes[{ scene.hash, scene.durationMs }].push_back(&scene);
+    }
+
+    // 注目しているファイルと共有している時間を積算
+    //
+    // A → B と B → A は同じになるため、一度積算したら fileIds から削除する。
+    std::map<FileId, std::map<FileId, DurationMs>> relationMap;
+
+    while ( ! fileIds.empty() ) {
+        FileId fileId   = fileIds.extract(fileIds.begin()).value();
+        auto&  relation = relationMap[fileId];
+
+        for ( const Scene* fileScene : fileScenes[fileId] ) {
+            SceneId sceneId { fileScene->hash, fileScene->durationMs };
+            for ( const Scene* hashScene : hashScenes[sceneId] ) {
+                if ( fileIds.count(hashScene->fileId) == 0 ) {
+                    // B → A はやらない
+                    continue;
+                }
+                relation[hashScene->fileId] += fileScene->durationMs;
+            }
+        }
+    }
+
+    // 積算結果を vector に詰替え
+    std::vector<std::tuple<FileId, FileId, DurationMs>> relations;
+
+    // for ( const std::pair<FileId, std::map<FileId, DurationMs>>& relation : relationMap ) {
+    for ( const auto& relation : relationMap ) {
+        for ( const auto& fileDuration : relation.second ) {
+            relations.emplace_back(relation.first, fileDuration.first, fileDuration.second);
+        }
+    }
+
+    // duration でソート
+    std::sort(relations.begin(), relations.end(), [&](const auto& a, const auto& b) {
+        return std::get<2>(a) > std::get<2>(b);
+    });
+
+    // 結果を出力
+    for ( const auto& relation : relations ) {
+        std::fprintf(
+            stderr,
+            "---- %8.1f seconds matched\n%s\n%s\n",
+            std::get<2>(relation) / 1000.0f,
+            fileNames[std::get<0>(relation)].c_str(),
+            fileNames[std::get<1>(relation)].c_str()
+        );
     }
 
     return 0;
