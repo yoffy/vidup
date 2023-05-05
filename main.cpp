@@ -62,7 +62,6 @@ static const std::size_t kFrameSize             = 16 * 16;
 static const double      kSceneChangedThreshold = 4.5;
 
 static bool g_isVerbose = false;
-static int  g_FrameRate = 30;
 
 // TODO: use CLMUL
 static std::uint32_t
@@ -143,27 +142,13 @@ static int enableForeignKeys(sqlite3* db)
     return 0;
 }
 
-//! データベースを作成する
+//! テーブルを作成する
 //!
 //! @return 成功なら 0
-static int createDatabase(const fs::path& path)
+static int createTables(sqlite3* db)
 {
-    sqlite3*      db   = nullptr;
     sqlite3_stmt* stmt = nullptr;
     int           status;
-
-    // open db
-    if ( int err = sqlite3_open(path.c_str(), &db); err ) {
-        std::fprintf(stderr, "sqlite3_open: %s\n", sqlite3_errmsg(db));
-        sqlite3_close(db);
-        return 1;
-    }
-
-    // pragma
-    if ( int err = enableForeignKeys(db); err ) {
-        sqlite3_close(db);
-        return err;
-    }
 
     // create database files
     status = sqlite3_prepare_v2(
@@ -179,7 +164,6 @@ static int createDatabase(const fs::path& path)
     );
     if ( status ) {
         std::fprintf(stderr, "CREATE TABLE files: %s\n", sqlite3_errmsg(db));
-        sqlite3_close(db);
         return 1;
     }
 
@@ -187,7 +171,6 @@ static int createDatabase(const fs::path& path)
     sqlite3_finalize(stmt);
     if ( status != SQLITE_DONE ) {
         std::fprintf(stderr, "CREATE TABLE files: %s\n", sqlite3_errmsg(db));
-        sqlite3_close(db);
         return 1;
     }
 
@@ -206,7 +189,6 @@ static int createDatabase(const fs::path& path)
     );
     if ( status ) {
         std::fprintf(stderr, "CREATE TABLE scenes: %s\n", sqlite3_errmsg(db));
-        sqlite3_close(db);
         return 1;
     }
 
@@ -214,7 +196,6 @@ static int createDatabase(const fs::path& path)
     sqlite3_finalize(stmt);
     if ( status != SQLITE_DONE ) {
         std::fprintf(stderr, "CREATE TABLE scenes: %s\n", sqlite3_errmsg(db));
-        sqlite3_close(db);
         return 1;
     }
 
@@ -228,7 +209,6 @@ static int createDatabase(const fs::path& path)
     );
     if ( status ) {
         std::fprintf(stderr, "CREATE INDEX scene_hash_duration: %s\n", sqlite3_errmsg(db));
-        sqlite3_close(db);
         return 1;
     }
 
@@ -236,7 +216,6 @@ static int createDatabase(const fs::path& path)
     sqlite3_finalize(stmt);
     if ( status != SQLITE_DONE ) {
         std::fprintf(stderr, "CREATE INDEX scene_hash_duration: %s\n", sqlite3_errmsg(db));
-        sqlite3_close(db);
         return 1;
     }
 
@@ -246,7 +225,6 @@ static int createDatabase(const fs::path& path)
     );
     if ( status ) {
         std::fprintf(stderr, "CREATE INDEX scene_file_id: %s\n", sqlite3_errmsg(db));
-        sqlite3_close(db);
         return 1;
     }
 
@@ -254,11 +232,9 @@ static int createDatabase(const fs::path& path)
     sqlite3_finalize(stmt);
     if ( status != SQLITE_DONE ) {
         std::fprintf(stderr, "CREATE INDEX scene_file_id: %s\n", sqlite3_errmsg(db));
-        sqlite3_close(db);
         return 1;
     }
 
-    sqlite3_close(db);
     return 0;
 }
 
@@ -641,7 +617,7 @@ static int deleteFile(sqlite3* db, FileId fileId)
 //! シーンを解析して DB に登録する
 //!
 //! @return 成功なら 0
-static int analyzeScenes(sqlite3* db, std::FILE* inStream, FileId fileId)
+static int analyzeScenes(sqlite3* db, std::FILE* inStream, FileId fileId, int frameRate)
 {
     std::uint8_t  frames[kFrameSize * 3] = { 0 };
     std::uint8_t* firstFrame             = &frames[kFrameSize * 0];
@@ -655,12 +631,12 @@ static int analyzeScenes(sqlite3* db, std::FILE* inStream, FileId fileId)
 
     while ( readFrame(inStream, frame) ) {
         double error = rmse(frame, lastFrame);
-        debugPrintf("%8d (%6.1f): %6.1f: %08X", i, double(i) / g_FrameRate, error, crc);
+        debugPrintf("%8d (%6.1f): %6.1f: %08X", i, double(i) / frameRate, error, crc);
         if ( error > kSceneChangedThreshold ) {
             // scene changed
             if ( i > 0 ) {
                 debugPrintf(" scene changed\n");
-                DurationMs durationMs = (i - iFirstFrame) * 1000 / g_FrameRate;
+                DurationMs durationMs = (i - iFirstFrame) * 1000 / frameRate;
                 if ( db && registerScene(db, { { crc, durationMs }, fileId }) ) {
                     return 1;
                 }
@@ -682,7 +658,7 @@ static int analyzeScenes(sqlite3* db, std::FILE* inStream, FileId fileId)
     }
 
     {
-        DurationMs durationMs = (i - iFirstFrame) * 1000 / g_FrameRate;
+        DurationMs durationMs = (i - iFirstFrame) * 1000 / frameRate;
         if ( db && registerScene(db, { { crc, durationMs }, fileId }) ) {
             return 1;
         }
@@ -980,213 +956,222 @@ static int parseArgvInt(int argc, const char** argv, int iArg, int& out)
     return (begin == end || *end != '\0');
 }
 
-static void usage()
-{
-    std::puts("usage: vidup --init");
-    std::puts("       vidup [--dry-run] [--force] [-v] [--frame-rate n] file");
-    std::puts("       vidup [--dry-run] [--force] [-v] [--frame-rate n] --stdin filename");
-    std::puts("       vidup --delete filename");
-    std::puts("       vidup --search filename");
-    std::puts("       vidup --top [n]"); // n はシーン数なので出力の数とは一致しない
-    // std::puts("       vidup --files"); // for debug
-    // std::puts("       vidup --file-scenes filename"); // for debug
-}
+class Vidup {
+public:
+    ~Vidup()
+    {
+        closeDatabase();
+        if ( m_InStream ) {
+            std::fclose(m_InStream);
+            m_InStream = nullptr;
+        }
+    }
 
-enum CommandMode { kAnalyze, kDelete, kSearch, kTop, kFiles, kFileScenes };
+    //! @return exit code
+    int exec(int argc, const char* argv[])
+    {
+        if ( int exitCode = parseOptions(argc, argv); exitCode ) {
+            return exitCode;
+        }
+        if ( int exitCode = openDatabase(m_DbPath); exitCode ) {
+            return exitCode;
+        }
 
-int main(int argc, const char* argv[])
-{
-    fs::path    me       = argv[0];
-    fs::path    basedir  = me.parent_path();
-    fs::path    dbPath   = basedir / "database";
-    std::FILE*  inStream = nullptr;
-    CommandMode mode     = kAnalyze;
-    bool        isDryRun = false;
-    bool        isForced = false;
+        if ( m_Mode == CommandMode::kInit ) {
+            return createTables(m_Db);
+        } else if ( m_Mode == CommandMode::kTop ) {
+            int limit = 10;
+            if ( m_iArg + 1 == argc ) {
+                limit = std::atoi(argv[m_iArg]);
+                m_iArg += 1;
+            }
+            return top(m_Db, limit);
+        } else if ( m_Mode == CommandMode::kFiles ) {
+            return files(m_Db);
+        }
 
-    int iArg     = 1;
-    int exitCode = 0;
-
-    // parse options
-    while ( iArg < argc && argv[iArg][0] == '-' ) {
-        if ( iArg >= argc ) {
+        // inPath
+        if ( m_iArg >= argc ) {
             usage();
             return 1;
         }
-        std::string arg = argv[iArg];
-        if ( arg == "--init" ) {
-            return createDatabase(dbPath);
-        } else if ( arg == "--dry-run" ) {
-            isDryRun = true;
-        } else if ( arg == "--force" ) {
-            isForced = true;
-        } else if ( arg == "-v" ) {
-            g_isVerbose = true;
-        } else if ( arg == "--stdin" ) {
-            inStream = stdin;
-        } else if ( arg == "--delete" ) {
-            mode = CommandMode::kDelete;
-        } else if ( arg == "--search" ) {
-            mode = CommandMode::kSearch;
-        } else if ( arg == "--top" ) {
-            mode = CommandMode::kTop;
-        } else if ( arg == "--files" ) {
-            mode = CommandMode::kFiles;
-        } else if ( arg == "--file-scenes" ) {
-            mode = CommandMode::kFileScenes;
-        } else if ( arg == "--frame-rate" ) {
-            iArg += 1;
-            if ( parseArgvInt(argc, argv, iArg, g_FrameRate) ) {
-                usage();
+
+        FileEntry fileEntry {};
+        fs::path  inPath = argv[m_iArg];
+        fs::path  inName = inPath.stem();
+
+        // exists file in db?
+        if ( getFileEntry(m_Db, inName, fileEntry) ) {
+            return 1;
+        }
+
+        if ( m_Mode == CommandMode::kAnalyze ) {
+            // open m_InStream
+            if ( ! m_InStream ) {
+                const char* inputPath = argv[m_iArg];
+                m_iArg += 1;
+                m_InStream = std::fopen(inputPath, "r");
+            }
+            if ( ! m_InStream ) {
+                std::perror("fopen for read");
                 return 1;
             }
-        } else {
-            std::fprintf(stderr, "unknown: %s\n", arg.c_str());
-            usage();
-            return 1;
-        }
 
-        iArg += 1;
-    }
+            if ( fileEntry.id >= 0 ) {
+                if ( fileEntry.status == FileStatus::kAnalyzed ) {
+                    if ( ! m_IsForced ) {
+                        std::fprintf(stderr, "\"%s\" already exists.\n", inName.c_str());
+                        return 0;
+                    }
+                }
 
-    // open db
-    sqlite3*  db = nullptr;
-    FileEntry fileEntry {};
-    fs::path  inPath;
-    fs::path  inName;
-
-    if ( int err = sqlite3_open(dbPath.c_str(), &db); err ) {
-        std::fprintf(stderr, "sqlite3_open: %s\n", sqlite3_errmsg(db));
-        exitCode = 1;
-        goto Lfinalize;
-    }
-
-    if ( int err = enableForeignKeys(db); err ) {
-        exitCode = 1;
-        goto Lfinalize;
-    }
-
-    if ( mode == CommandMode::kTop ) {
-        int limit = 10;
-        if ( iArg + 1 == argc ) {
-            limit = std::atoi(argv[iArg]);
-            iArg += 1;
-        }
-        if ( top(db, limit) ) {
-            exitCode = 1;
-        }
-
-        sqlite3_close(db);
-        return exitCode;
-    } else if ( mode == CommandMode::kFiles ) {
-        if ( files(db) ) {
-            exitCode = 1;
-        }
-
-        sqlite3_close(db);
-        return exitCode;
-    }
-
-    // inPath
-    if ( iArg >= argc ) {
-        usage();
-        return 1;
-    }
-
-    inPath = argv[iArg];
-    inName = inPath.stem();
-
-    // exists file in db?
-    if ( getFileEntry(db, inName, fileEntry) ) {
-        exitCode = 1;
-        goto Lfinalize;
-    }
-
-    if ( mode == CommandMode::kAnalyze ) {
-        // open inStream
-        if ( ! inStream ) {
-            const char* inputPath = argv[iArg];
-            iArg += 1;
-            inStream = std::fopen(inputPath, "r");
-        }
-        if ( ! inStream ) {
-            std::perror("fopen for read");
-            return 1;
-        }
-
-        if ( fileEntry.id >= 0 ) {
-            if ( fileEntry.status == FileStatus::kAnalyzed ) {
-                if ( ! isForced ) {
-                    std::fprintf(stderr, "\"%s\" already exists.\n", inName.c_str());
-                    exitCode = 0;
-                    goto Lfinalize;
+                // どんな状態であろうとエントリが存在するなら消す
+                if ( ! m_IsDryRun && deleteFile(m_Db, fileEntry.id) ) {
+                    return 1;
                 }
             }
 
-            // どんな状態であろうとエントリが存在するなら消す
-            if ( ! isDryRun && deleteFile(db, fileEntry.id) ) {
-                exitCode = 1;
-                goto Lfinalize;
+            if ( ! m_IsDryRun ) {
+                if ( registerFile(m_Db, inName) ) {
+                    return 1;
+                }
+                if ( getFileEntry(m_Db, inName, fileEntry) ) {
+                    return 1;
+                }
             }
-        }
 
-        if ( ! isDryRun ) {
-            if ( registerFile(db, inName) ) {
-                exitCode = 1;
-                goto Lfinalize;
+            std::fprintf(stderr, "analyzing \"%s\"\n", inName.c_str());
+            return analyzeScenes(
+                m_IsDryRun ? nullptr : m_Db, m_InStream, fileEntry.id, m_FrameRate
+            );
+        } else if ( m_Mode == CommandMode::kDelete ) {
+            if ( fileEntry.id < 0 ) {
+                std::fprintf(stderr, "\"%s\" not found.\n", inName.c_str());
+                return 1;
             }
-            if ( getFileEntry(db, inName, fileEntry) ) {
-                exitCode = 1;
-                goto Lfinalize;
+
+            return deleteFile(m_Db, fileEntry.id);
+        } else if ( m_Mode == CommandMode::kSearch ) {
+            if ( fileEntry.id < 0 ) {
+                std::fprintf(stderr, "\"%s\" not found.\n", inName.c_str());
+                return 1;
             }
+
+            return searchFile(m_Db, fileEntry.id, 10);
+        } else if ( m_Mode == CommandMode::kFileScenes ) {
+            if ( fileEntry.id < 0 ) {
+                std::fprintf(stderr, "\"%s\" not found.\n", inName.c_str());
+                return 1;
+            }
+
+            return showFileScenes(m_Db, fileEntry.id);
         }
 
-        std::fprintf(stderr, "analyzing \"%s\"\n", inName.c_str());
-        if ( analyzeScenes(isDryRun ? nullptr : db, inStream, fileEntry.id) ) {
-            exitCode = 1;
-            goto Lfinalize;
-        }
-    } else if ( mode == CommandMode::kDelete ) {
-        if ( fileEntry.id < 0 ) {
-            std::fprintf(stderr, "\"%s\" not found.\n", inName.c_str());
-            exitCode = 1;
-            goto Lfinalize;
-        }
-
-        if ( deleteFile(db, fileEntry.id) ) {
-            exitCode = 1;
-            goto Lfinalize;
-        }
-    } else if ( mode == CommandMode::kSearch ) {
-        if ( fileEntry.id < 0 ) {
-            std::fprintf(stderr, "\"%s\" not found.\n", inName.c_str());
-            exitCode = 1;
-            goto Lfinalize;
-        }
-
-        if ( searchFile(db, fileEntry.id, 10) ) {
-            exitCode = 1;
-            goto Lfinalize;
-        }
-    } else if ( mode == CommandMode::kFileScenes ) {
-        if ( fileEntry.id < 0 ) {
-            std::fprintf(stderr, "\"%s\" not found.\n", inName.c_str());
-            exitCode = 1;
-            goto Lfinalize;
-        }
-
-        if ( showFileScenes(db, fileEntry.id) ) {
-            exitCode = 1;
-            goto Lfinalize;
-        }
+        return 0;
     }
 
-Lfinalize:
-    sqlite3_close(db);
-    if ( inStream ) {
-        std::fclose(inStream);
-        inStream = nullptr;
+private:
+    enum CommandMode { kInit, kAnalyze, kDelete, kSearch, kTop, kFiles, kFileScenes };
+
+    int         m_iArg = 1;
+    fs::path    m_Me;
+    fs::path    m_Basedir;
+    fs::path    m_DbPath;
+    bool        m_IsDryRun  = false;
+    bool        m_IsForced  = false;
+    int         m_FrameRate = 30;
+    CommandMode m_Mode      = CommandMode::kAnalyze;
+    std::FILE*  m_InStream  = nullptr;
+    sqlite3*    m_Db        = nullptr;
+
+    //! @return exit code
+    int parseOptions(int argc, const char* argv[])
+    {
+        m_Me      = argv[0];
+        m_Basedir = m_Me.parent_path();
+        m_DbPath  = m_Basedir / "database";
+        m_iArg    = 1;
+
+        // parse options
+        while ( m_iArg < argc && argv[m_iArg][0] == '-' ) {
+            std::string arg = argv[m_iArg];
+
+            if ( arg == "--init" ) {
+                m_Mode = CommandMode::kInit;
+            } else if ( arg == "--dry-run" ) {
+                m_IsDryRun = true;
+            } else if ( arg == "--force" ) {
+                m_IsForced = true;
+            } else if ( arg == "-v" ) {
+                g_isVerbose = true;
+            } else if ( arg == "--stdin" ) {
+                m_InStream = stdin;
+            } else if ( arg == "--delete" ) {
+                m_Mode = CommandMode::kDelete;
+            } else if ( arg == "--search" ) {
+                m_Mode = CommandMode::kSearch;
+            } else if ( arg == "--top" ) {
+                m_Mode = CommandMode::kTop;
+            } else if ( arg == "--files" ) {
+                m_Mode = CommandMode::kFiles;
+            } else if ( arg == "--file-scenes" ) {
+                m_Mode = CommandMode::kFileScenes;
+            } else if ( arg == "--frame-rate" ) {
+                m_iArg += 1;
+                if ( parseArgvInt(argc, argv, m_iArg, m_FrameRate) ) {
+                    usage();
+                    return 1;
+                }
+            } else {
+                std::fprintf(stderr, "unknown: %s\n", arg.c_str());
+                usage();
+                return 1;
+            }
+
+            m_iArg += 1;
+        }
+
+        return 0;
     }
 
-    return exitCode;
+    void usage()
+    {
+        std::puts("usage: vidup --init");
+        std::puts("       vidup [--dry-run] [--force] [-v] [--frame-rate n] file");
+        std::puts("       vidup [--dry-run] [--force] [-v] [--frame-rate n] --stdin filename");
+        std::puts("       vidup --delete filename");
+        std::puts("       vidup --search filename");
+        std::puts("       vidup --top [n]"); // n はシーン数なので出力の数とは一致しない
+        // std::puts("       vidup --files"); // for debug
+        // std::puts("       vidup --file-scenes filename"); // for debug
+    }
+
+    //! @return exit code
+    int openDatabase(const fs::path& dbPath)
+    {
+        closeDatabase();
+        if ( int err = sqlite3_open(dbPath.c_str(), &m_Db); err ) {
+            std::fprintf(stderr, "sqlite3_open: %s\n", sqlite3_errmsg(m_Db));
+            return 1;
+        }
+
+        if ( int err = enableForeignKeys(m_Db); err ) {
+            return 1;
+        }
+
+        return 0;
+    }
+
+    void closeDatabase()
+    {
+        sqlite3_close(m_Db);
+        m_Db = nullptr;
+    }
+};
+
+int main(int argc, const char* argv[])
+{
+    Vidup vidup;
+
+    return vidup.exec(argc, argv);
 }
