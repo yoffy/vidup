@@ -909,6 +909,39 @@ static int top(sqlite3* db, int limit)
     return 0;
 }
 
+//! ファイル一覧を出力する
+//!
+//! @return 成功なら 0
+static int files(sqlite3* db)
+{
+    sqlite3_stmt* stmt = nullptr;
+    int           status;
+
+    status = sqlite3_prepare_v2(db, "SELECT path, status FROM files", -1, &stmt, nullptr);
+    if ( status ) {
+        std::fprintf(stderr, "files: %s\n", sqlite3_errmsg(db));
+        return status;
+    }
+
+    status = sqlite3_step(stmt);
+    std::fprintf(stdout, "name\tstatus\n");
+    while ( status == SQLITE_ROW ) {
+        fs::path path       = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        int      fileStatus = sqlite3_column_int(stmt, 1);
+
+        std::fprintf(stdout, "%s\t%d\n", path.c_str(), fileStatus);
+        status = sqlite3_step(stmt);
+    }
+    sqlite3_finalize(stmt);
+
+    if ( status != SQLITE_DONE ) {
+        std::fprintf(stderr, "files: %s\n", sqlite3_errmsg(db));
+        return status;
+    }
+
+    return 0;
+}
+
 //! fileId のシーンを出力する (デバッグ用)
 //!
 //! @return 成功なら 0
@@ -958,10 +991,11 @@ static void usage()
     std::puts("       vidup --delete filename");
     std::puts("       vidup --search filename");
     std::puts("       vidup --top [n]"); // n はシーン数なので出力の数とは一致しない
+    // std::puts("       vidup --files"); // for debug
     // std::puts("       vidup --file-scenes filename"); // for debug
 }
 
-enum CommandMode { kAnalyze, kDelete, kSearch, kTop, kFileScenes };
+enum CommandMode { kAnalyze, kDelete, kSearch, kTop, kFiles, kFileScenes };
 
 int main(int argc, const char* argv[])
 {
@@ -999,6 +1033,8 @@ int main(int argc, const char* argv[])
             mode = CommandMode::kSearch;
         } else if ( arg == "--top" ) {
             mode = CommandMode::kTop;
+        } else if ( arg == "--files" ) {
+            mode = CommandMode::kFiles;
         } else if ( arg == "--file-scenes" ) {
             mode = CommandMode::kFileScenes;
         } else if ( arg == "--frame-rate" ) {
@@ -1040,6 +1076,13 @@ int main(int argc, const char* argv[])
             iArg += 1;
         }
         if ( top(db, limit) ) {
+            exitCode = 1;
+        }
+
+        sqlite3_close(db);
+        return exitCode;
+    } else if ( mode == CommandMode::kFiles ) {
+        if ( files(db) ) {
             exitCode = 1;
         }
 
