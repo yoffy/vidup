@@ -683,7 +683,7 @@ static int analyzeScenes(sqlite3* db, std::FILE* inStream, FileId fileId)
 
     {
         DurationMs durationMs = (i - iFirstFrame) * 1000 / g_FrameRate;
-        if ( db && registerScene(db, { crc, durationMs, fileId }) ) {
+        if ( db && registerScene(db, { { crc, durationMs }, fileId }) ) {
             return 1;
         }
         nScenes += 1;
@@ -717,13 +717,13 @@ countScenes(const std::vector<Scene>& scenes, std::vector<std::pair<FileId, int>
         lower = std::lower_bound(
             lower,
             scenes.end(),
-            Scene { 0, 0, fileId },
+            Scene { { 0, 0 }, fileId },
             [&](const Scene& a, const Scene& b) { return a.fileId < b.fileId; }
         );
         auto upper = std::upper_bound(
             lower,
             scenes.end(),
-            Scene { 0, 0, fileId },
+            Scene { { 0, 0 }, fileId },
             [&](const Scene& a, const Scene& b) { return a.fileId < b.fileId; }
         );
 
@@ -765,13 +765,13 @@ static int searchFile(sqlite3* db, FileId fileId, int limit)
     auto lower = std::lower_bound(
         foundScenes.begin(),
         foundScenes.end(),
-        Scene { 0, 0, fileId },
+        Scene { { 0, 0 }, fileId },
         [&](const Scene& a, const Scene& b) { return a.fileId < b.fileId; }
     );
     auto upper = std::upper_bound(
         foundScenes.begin(),
         foundScenes.end(),
-        Scene { 0, 0, fileId },
+        Scene { { 0, 0 }, fileId },
         [&](const Scene& a, const Scene& b) { return a.fileId < b.fileId; }
     );
     foundScenes.erase(lower, upper);
@@ -822,7 +822,6 @@ static int top(sqlite3* db, int limit)
     }
 
     // hashCounts と同じハッシュを含むシーンを列挙
-    int                i = 0;
     std::vector<Scene> foundScenes;
     for ( const HashCount& hashCount : hashCounts ) {
         if ( getScenesByHash(db, hashCount.sceneId, foundScenes) ) {
@@ -831,8 +830,6 @@ static int top(sqlite3* db, int limit)
 
         // 同じシーンを含むファイル名を列挙
         debugPrintf("---- %8.1f seconds matched\n", hashCount.sceneId.durationMs / 1000.0);
-
-        i += 1;
     }
 
     // ファイルを列挙
